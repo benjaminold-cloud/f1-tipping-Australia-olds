@@ -52,8 +52,8 @@ function getRoundStatus(round, now) {
   if (now < new Date(raceLock)) {
     return {
       locked: false,
-      phase: round.is_sprint ? "before_race_lock" : "before_race_lock",
-      nextLabel: "Race tips lock in",
+      phase: "before_race_lock",
+      nextLabel: "Grand Prix tips lock in",
       nextTime: raceLock
     };
   }
@@ -387,7 +387,7 @@ export default function App() {
               {rounds.map((r) => (
                 <option key={r.id} value={r.id}>
                   R{r.round_number} · {r.grand_prix}
-                  {r.is_sprint ? " · Sprint" : ""}
+                  {r.is_sprint ? " · Sprint Weekend" : ""}
                 </option>
               ))}
             </select>
@@ -401,12 +401,45 @@ export default function App() {
                   </div>
                 </div>
 
-                <p><strong>Race:</strong> {fmt(activeRound.race_start)}</p>
+                <div style={styles.infoBlock}>
+                  <div style={styles.infoRow}>
+                    <span style={styles.infoLabel}>Weekend type</span>
+                    <span>{activeRound.is_sprint ? "Sprint Weekend" : "Grand Prix Weekend"}</span>
+                  </div>
+
+                  <div style={styles.infoRow}>
+                    <span style={styles.infoLabel}>Grand Prix</span>
+                    <span>{activeRound.grand_prix}</span>
+                  </div>
+
+                  {activeRound.is_sprint ? (
+                    <div style={styles.infoRow}>
+                      <span style={styles.infoLabel}>Sprint tips lock</span>
+                      <span>{fmt(activeRound.sprint_lock_at)}</span>
+                    </div>
+                  ) : null}
+
+                  <div style={styles.infoRow}>
+                    <span style={styles.infoLabel}>Grand Prix tips lock</span>
+                    <span>{fmt(activeRound.race_lock_at || activeRound.tips_close)}</span>
+                  </div>
+
+                  <div style={styles.infoRow}>
+                    <span style={styles.infoLabel}>Grand Prix start</span>
+                    <span>{fmt(activeRound.race_start)}</span>
+                  </div>
+
+                  <div style={styles.infoRow}>
+                    <span style={styles.infoLabel}>Status</span>
+                    <span>{roundStatus.locked ? "Locked" : "Open"}</span>
+                  </div>
+                </div>
+
                 {activeRound.is_sprint ? (
-                  <p><strong>Sprint lock:</strong> {fmt(activeRound.sprint_lock_at)}</p>
+                  <div style={styles.sprintNote}>
+                    This is a sprint weekend. The app shows both the sprint lock and the main Grand Prix lock.
+                  </div>
                 ) : null}
-                <p><strong>Race lock:</strong> {fmt(activeRound.race_lock_at || activeRound.tips_close)}</p>
-                <p><strong>Status:</strong> {roundStatus.locked ? "Locked" : "Open"}</p>
 
                 <h3>Your tip</h3>
 
@@ -559,5 +592,31 @@ const styles = {
   countdownValue: {
     fontSize: 28,
     fontWeight: 800
+  },
+  infoBlock: {
+    background: "#11151c",
+    border: "1px solid #2a2f3a",
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16
+  },
+  infoRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "8px 0",
+    borderBottom: "1px solid #232833"
+  },
+  infoLabel: {
+    color: "#9ca3af"
+  },
+  sprintNote: {
+    background: "#1b2230",
+    border: "1px solid #334155",
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+    color: "#dbeafe",
+    fontSize: 14
   }
 };
