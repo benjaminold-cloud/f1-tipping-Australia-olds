@@ -11,8 +11,59 @@ function fmt(dateStr) {
   return new Date(dateStr).toLocaleString();
 }
 
-function isLocked(round) {
-  return new Date(round.tips_close) <= new Date();
+function countdownText(targetDate, now) {
+  if (!targetDate) return "TBC";
+  const diff = new Date(targetDate).getTime() - now.getTime();
+
+  if (diff <= 0) return "Closed";
+
+  const totalSeconds = Math.floor(diff / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) return `${days}d ${hours}h ${minutes}m ${seconds}s`;
+  return `${hours}h ${minutes}m ${seconds}s`;
+}
+
+function getRoundStatus(round, now) {
+  if (!round) {
+    return {
+      locked: true,
+      phase: "none",
+      nextLabel: "No round selected",
+      nextTime: null
+    };
+  }
+
+  const raceLock = round.race_lock_at || round.tips_close;
+  const sprintLock = round.is_sprint ? round.sprint_lock_at : null;
+
+  if (round.is_sprint && sprintLock && now < new Date(sprintLock)) {
+    return {
+      locked: false,
+      phase: "before_sprint_lock",
+      nextLabel: "Sprint tips lock in",
+      nextTime: sprintLock
+    };
+  }
+
+  if (now < new Date(raceLock)) {
+    return {
+      locked: false,
+      phase: round.is_sprint ? "before_race_lock" : "before_race_lock",
+      nextLabel: "Race tips lock in",
+      nextTime: raceLock
+    };
+  }
+
+  return {
+    locked: true,
+    phase: "locked",
+    nextLabel: "Tips closed",
+    nextTime: raceLock
+  };
 }
 
 function scoreTip(tip, result, isSprint) {
@@ -47,20 +98,6 @@ function Auth({ onReady }) {
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [msg, setMsg] = useState("");
-
-  useEffect(() => {
-    async function testConnection() {
-      try {
-        const { error } = await supabase.auth.getSession();
-        if (error) {
-          setMsg(`Session test error: ${error.message}`);
-        }
-      } catch (err) {
-        setMsg(`Connection failed: ${err.message}`);
-      }
-    }
-    testConnection();
-  }, []);
 
   async function submit(e) {
     e.preventDefault();
@@ -97,7 +134,6 @@ function Auth({ onReady }) {
 
       onReady();
     } catch (err) {
-      console.error("Signup/signin error", err);
       setMsg(err?.message || "Something went wrong");
     }
   }
@@ -108,18 +144,10 @@ function Auth({ onReady }) {
         <h1>🏁 Olds F1 Tipping</h1>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-          <button
-            type="button"
-            onClick={() => setMode("signin")}
-            style={styles.tab}
-          >
+          <button type="button" onClick={() => setMode("signin")} style={styles.tab}>
             Sign in
           </button>
-          <button
-            type="button"
-            onClick={() => setMode("signup")}
-            style={styles.tab}
-          >
+          <button type="button" onClick={() => setMode("signup")} style={styles.tab}>
             Create account
           </button>
         </div>
@@ -176,6 +204,12 @@ export default function App() {
     oscar_finish: ""
   });
   const [msg, setMsg] = useState("");
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   async function loadAll(userId) {
     const [
@@ -196,15 +230,18 @@ export default function App() {
     setResults(resultsData || []);
 
     const firstOpen =
-      (roundsData || []).find((r) => !isLocked(r)) || (roundsData || [])[0];
+      (roundsData || []).find((r) => !getRoundStatus(r, new Date()).locked) ||
+      (roundsData || [])[0];
 
     if (firstOpen) {
       setActiveRoundId(firstOpen.id);
       const myTip = (tipsData || []).find(
         (t) => t.round_id === firstOpen.id && t.user_id === userId
       );
-      if (myTip) setDraft(myTip);
-      else {
+
+      if (myTip) {
+        setDraft(myTip);
+      } else {
         setDraft({
           p1_driver_id: "",
           p2_driver_id: "",
@@ -231,24 +268,22 @@ export default function App() {
       }
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      async (_event, sess) => {
-        setSession(sess);
+    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, sess) => {
+      setSession(sess);
 
-        if (sess?.user) {
-          const { data: p } = await supabase
-            .from("profiles")
-            .select("*")
-            .eq("id", sess.user.id)
-            .maybeSingle();
+      if (sess?.user) {
+        const { data: p } = await supabase
+          .from("profiles")
+          .select("*")
+          .eq("id", sess.user.id)
+          .maybeSingle();
 
-          setProfile(p || null);
-          await loadAll(sess.user.id);
-        } else {
-          setProfile(null);
-        }
+        setProfile(p || null);
+        await loadAll(sess.user.id);
+      } else {
+        setProfile(null);
       }
-    );
+    });
 
     return () => listener.subscription.unsubscribe();
   }, []);
@@ -256,6 +291,11 @@ export default function App() {
   const activeRound = useMemo(
     () => rounds.find((r) => r.id === activeRoundId) || null,
     [rounds, activeRoundId]
+  );
+
+  const roundStatus = useMemo(
+    () => getRoundStatus(activeRound, now),
+    [activeRound, now]
   );
 
   const leaderboard = useMemo(() => {
@@ -315,13 +355,14 @@ export default function App() {
 
   async function signOut() {
     await supabase.auth.signOut();
+    window.location.reload();
   }
 
   if (!session) return <Auth onReady={() => {}} />;
 
   return (
     <div style={styles.page}>
-      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+      <div style={{ maxWidth: 1150, margin: "0 auto" }}>
         <div style={styles.header}>
           <div>
             <h1>🏁 Olds F1 Tipping 2026</h1>
@@ -346,15 +387,26 @@ export default function App() {
               {rounds.map((r) => (
                 <option key={r.id} value={r.id}>
                   R{r.round_number} · {r.grand_prix}
+                  {r.is_sprint ? " · Sprint" : ""}
                 </option>
               ))}
             </select>
 
             {activeRound ? (
               <>
+                <div style={styles.countdownBox}>
+                  <div style={styles.countdownLabel}>{roundStatus.nextLabel}</div>
+                  <div style={styles.countdownValue}>
+                    {countdownText(roundStatus.nextTime, now)}
+                  </div>
+                </div>
+
                 <p><strong>Race:</strong> {fmt(activeRound.race_start)}</p>
-                <p><strong>Tips close:</strong> {fmt(activeRound.tips_close)}</p>
-                <p><strong>Status:</strong> {isLocked(activeRound) ? "Locked" : "Open"}</p>
+                {activeRound.is_sprint ? (
+                  <p><strong>Sprint lock:</strong> {fmt(activeRound.sprint_lock_at)}</p>
+                ) : null}
+                <p><strong>Race lock:</strong> {fmt(activeRound.race_lock_at || activeRound.tips_close)}</p>
+                <p><strong>Status:</strong> {roundStatus.locked ? "Locked" : "Open"}</p>
 
                 <h3>Your tip</h3>
 
@@ -362,7 +414,7 @@ export default function App() {
                   <select
                     key={n}
                     style={styles.input}
-                    disabled={isLocked(activeRound)}
+                    disabled={roundStatus.locked}
                     value={draft[`p${n}_driver_id`] || ""}
                     onChange={(e) =>
                       setDraft((prev) => ({
@@ -385,7 +437,7 @@ export default function App() {
                   type="number"
                   min="1"
                   max="22"
-                  disabled={isLocked(activeRound)}
+                  disabled={roundStatus.locked}
                   placeholder="Oscar finish"
                   value={draft.oscar_finish || ""}
                   onChange={(e) =>
@@ -399,9 +451,9 @@ export default function App() {
                 <button
                   style={styles.primary}
                   onClick={saveTip}
-                  disabled={isLocked(activeRound)}
+                  disabled={roundStatus.locked}
                 >
-                  {isLocked(activeRound) ? "Round locked" : "Save tip"}
+                  {roundStatus.locked ? "Tips closed" : "Save tip"}
                 </button>
               </>
             ) : null}
@@ -443,7 +495,7 @@ const styles = {
   },
   grid: {
     display: "grid",
-    gridTemplateColumns: "1fr 1fr",
+    gridTemplateColumns: "1.15fr 0.85fr",
     gap: 24
   },
   card: {
@@ -491,5 +543,21 @@ const styles = {
     justifyContent: "space-between",
     padding: "10px 0",
     borderBottom: "1px solid #2a2f3a"
+  },
+  countdownBox: {
+    background: "#0f1115",
+    border: "1px solid #2a2f3a",
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 16
+  },
+  countdownLabel: {
+    fontSize: 13,
+    color: "#9ca3af",
+    marginBottom: 6
+  },
+  countdownValue: {
+    fontSize: 28,
+    fontWeight: 800
   }
 };
