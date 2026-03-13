@@ -14,7 +14,6 @@ function fmt(dateStr) {
 function countdownText(targetDate, now) {
   if (!targetDate) return "TBC";
   const diff = new Date(targetDate).getTime() - now.getTime();
-
   if (diff <= 0) return "Closed";
 
   const totalSeconds = Math.floor(diff / 1000);
@@ -29,40 +28,38 @@ function countdownText(targetDate, now) {
 
 function getRoundStatus(round, now) {
   if (!round) {
-    return {
-      locked: true,
-      phase: "none",
-      nextLabel: "No round selected",
-      nextTime: null
-    };
+    return { locked: true, nextLabel: "No round selected", nextTime: null };
   }
 
-  const raceLock = round.race_lock_at || round.tips_close;
   const sprintLock = round.is_sprint ? round.sprint_lock_at : null;
+  const raceLock = round.race_lock_at || round.tips_close;
 
   if (round.is_sprint && sprintLock && now < new Date(sprintLock)) {
     return {
       locked: false,
-      phase: "before_sprint_lock",
       nextLabel: "Sprint tips lock in",
-      nextTime: sprintLock
+      nextTime: sprintLock,
+      sprintOpen: true,
+      raceOpen: true
     };
   }
 
   if (now < new Date(raceLock)) {
     return {
       locked: false,
-      phase: "before_race_lock",
       nextLabel: "Grand Prix tips lock in",
-      nextTime: raceLock
+      nextTime: raceLock,
+      sprintOpen: false,
+      raceOpen: true
     };
   }
 
   return {
     locked: true,
-    phase: "locked",
     nextLabel: "Tips closed",
-    nextTime: raceLock
+    nextTime: raceLock,
+    sprintOpen: false,
+    raceOpen: false
   };
 }
 
@@ -90,6 +87,66 @@ function scoreTip(tip, result, isSprint) {
   }
 
   return isSprint ? points / 2 : points;
+}
+
+function blankTip(resultType) {
+  return {
+    result_type: resultType,
+    p1_driver_id: "",
+    p2_driver_id: "",
+    p3_driver_id: "",
+    oscar_finish: ""
+  };
+}
+
+function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel }) {
+  return (
+    <div style={styles.subCard}>
+      <h3>{title}</h3>
+
+      {[1, 2, 3].map((n) => (
+        <select
+          key={n}
+          style={styles.input}
+          disabled={disabled}
+          value={draft[`p${n}_driver_id`] || ""}
+          onChange={(e) =>
+            setDraft((prev) => ({
+              ...prev,
+              [`p${n}_driver_id`]: e.target.value
+            }))
+          }
+        >
+          <option value="">Pick P{n}</option>
+          {drivers.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name} · {d.team}
+            </option>
+          ))}
+        </select>
+      ))}
+
+      <input
+        style={styles.input}
+        type="number"
+        min="1"
+        max="22"
+        disabled={disabled}
+        placeholder="Oscar finish"
+        value={draft.oscar_finish || ""}
+        onChange={(e) =>
+          setDraft((prev) => ({
+            ...prev,
+            oscar_finish: e.target.value
+          }))
+        }
+      />
+
+      <button style={styles.primary} onClick={onSave} disabled={disabled}>
+        {disabled ? "Locked" : saveLabel}
+      </button>
+    </div>
+  );
 }
 
 function Auth({ onReady }) {
@@ -122,10 +179,7 @@ function Auth({ onReady }) {
         return;
       }
 
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password
-      });
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
 
       if (error) {
         setMsg(error.message);
@@ -144,12 +198,8 @@ function Auth({ onReady }) {
         <h1>🏁 Olds F1 Tipping</h1>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-          <button type="button" onClick={() => setMode("signin")} style={styles.tab}>
-            Sign in
-          </button>
-          <button type="button" onClick={() => setMode("signup")} style={styles.tab}>
-            Create account
-          </button>
+          <button type="button" onClick={() => setMode("signin")} style={styles.tab}>Sign in</button>
+          <button type="button" onClick={() => setMode("signup")} style={styles.tab}>Create account</button>
         </div>
 
         <form onSubmit={submit}>
@@ -197,12 +247,8 @@ export default function App() {
   const [tips, setTips] = useState([]);
   const [results, setResults] = useState([]);
   const [activeRoundId, setActiveRoundId] = useState(null);
-  const [draft, setDraft] = useState({
-    p1_driver_id: "",
-    p2_driver_id: "",
-    p3_driver_id: "",
-    oscar_finish: ""
-  });
+  const [sprintDraft, setSprintDraft] = useState(blankTip("sprint"));
+  const [raceDraft, setRaceDraft] = useState(blankTip("race"));
   const [msg, setMsg] = useState("");
   const [now, setNow] = useState(new Date());
 
@@ -235,27 +281,22 @@ export default function App() {
 
     if (firstOpen) {
       setActiveRoundId(firstOpen.id);
-      const myTip = (tipsData || []).find(
-        (t) => t.round_id === firstOpen.id && t.user_id === userId
+
+      const mySprintTip = (tipsData || []).find(
+        (t) => t.round_id === firstOpen.id && t.user_id === userId && t.result_type === "sprint"
+      );
+      const myRaceTip = (tipsData || []).find(
+        (t) => t.round_id === firstOpen.id && t.user_id === userId && t.result_type === "race"
       );
 
-      if (myTip) {
-        setDraft(myTip);
-      } else {
-        setDraft({
-          p1_driver_id: "",
-          p2_driver_id: "",
-          p3_driver_id: "",
-          oscar_finish: ""
-        });
-      }
+      setSprintDraft(mySprintTip || blankTip("sprint"));
+      setRaceDraft(myRaceTip || blankTip("race"));
     }
   }
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       setSession(data.session);
-
       if (data.session?.user) {
         const { data: p } = await supabase
           .from("profiles")
@@ -293,6 +334,20 @@ export default function App() {
     [rounds, activeRoundId]
   );
 
+  useEffect(() => {
+    if (!activeRound || !session?.user) return;
+
+    const mySprintTip = tips.find(
+      (t) => t.round_id === activeRound.id && t.user_id === session.user.id && t.result_type === "sprint"
+    );
+    const myRaceTip = tips.find(
+      (t) => t.round_id === activeRound.id && t.user_id === session.user.id && t.result_type === "race"
+    );
+
+    setSprintDraft(mySprintTip || blankTip("sprint"));
+    setRaceDraft(myRaceTip || blankTip("race"));
+  }, [activeRound, tips, session]);
+
   const roundStatus = useMemo(
     () => getRoundStatus(activeRound, now),
     [activeRound, now]
@@ -313,26 +368,23 @@ export default function App() {
 
     tips.forEach((tip) => {
       const round = rounds.find((r) => r.id === tip.round_id);
-      const raceResult = results.find(
-        (r) => r.round_id === tip.round_id && r.result_type === "race"
-      );
-      const sprintResult = results.find(
-        (r) => r.round_id === tip.round_id && r.result_type === "sprint"
+      const result = results.find(
+        (r) => r.round_id === tip.round_id && r.result_type === tip.result_type
       );
       const row = byUser.get(tip.user_id);
-      row.total += scoreTip(tip, raceResult, false);
-      if (round?.is_sprint) row.total += scoreTip(tip, sprintResult, true);
+      row.total += scoreTip(tip, result, tip.result_type === "sprint" || round?.is_sprint && tip.result_type === "sprint");
     });
 
     return [...byUser.values()].sort((a, b) => b.total - a.total);
   }, [tips, results, rounds, profile]);
 
-  async function saveTip() {
+  async function saveTip(resultType, draft) {
     if (!session?.user || !activeRound) return;
 
     const payload = {
       round_id: activeRound.id,
       user_id: session.user.id,
+      result_type: resultType,
       p1_driver_id: draft.p1_driver_id || null,
       p2_driver_id: draft.p2_driver_id || null,
       p3_driver_id: draft.p3_driver_id || null,
@@ -342,14 +394,14 @@ export default function App() {
 
     const { error } = await supabase
       .from("tips")
-      .upsert(payload, { onConflict: "round_id,user_id" });
+      .upsert(payload, { onConflict: "round_id,user_id,result_type" });
 
     if (error) {
       setMsg(error.message);
       return;
     }
 
-    setMsg("Tip saved");
+    setMsg(`${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved`);
     await loadAll(session.user.id);
   }
 
@@ -362,15 +414,13 @@ export default function App() {
 
   return (
     <div style={styles.page}>
-      <div style={{ maxWidth: 1150, margin: "0 auto" }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto" }}>
         <div style={styles.header}>
           <div>
             <h1>🏁 Olds F1 Tipping 2026</h1>
-            <p>Top 3 + Oscar finish. Sprint races score half points.</p>
+            <p>Sprint tips are half points. Grand Prix tips are full points.</p>
           </div>
-          <button onClick={signOut} style={styles.primary}>
-            Sign out
-          </button>
+          <button onClick={signOut} style={styles.primary}>Sign out</button>
         </div>
 
         {msg ? <div style={styles.notice}>{msg}</div> : null}
@@ -386,8 +436,7 @@ export default function App() {
             >
               {rounds.map((r) => (
                 <option key={r.id} value={r.id}>
-                  R{r.round_number} · {r.grand_prix}
-                  {r.is_sprint ? " · Sprint Weekend" : ""}
+                  R{r.round_number} · {r.grand_prix}{r.is_sprint ? " · Sprint Weekend" : ""}
                 </option>
               ))}
             </select>
@@ -403,13 +452,13 @@ export default function App() {
 
                 <div style={styles.infoBlock}>
                   <div style={styles.infoRow}>
-                    <span style={styles.infoLabel}>Weekend type</span>
-                    <span>{activeRound.is_sprint ? "Sprint Weekend" : "Grand Prix Weekend"}</span>
+                    <span style={styles.infoLabel}>Grand Prix</span>
+                    <span>{activeRound.grand_prix}</span>
                   </div>
 
                   <div style={styles.infoRow}>
-                    <span style={styles.infoLabel}>Grand Prix</span>
-                    <span>{activeRound.grand_prix}</span>
+                    <span style={styles.infoLabel}>Weekend type</span>
+                    <span>{activeRound.is_sprint ? "Sprint Weekend" : "Grand Prix Weekend"}</span>
                   </div>
 
                   {activeRound.is_sprint ? (
@@ -428,66 +477,29 @@ export default function App() {
                     <span style={styles.infoLabel}>Grand Prix start</span>
                     <span>{fmt(activeRound.race_start)}</span>
                   </div>
-
-                  <div style={styles.infoRow}>
-                    <span style={styles.infoLabel}>Status</span>
-                    <span>{roundStatus.locked ? "Locked" : "Open"}</span>
-                  </div>
                 </div>
 
                 {activeRound.is_sprint ? (
-                  <div style={styles.sprintNote}>
-                    This is a sprint weekend. The app shows both the sprint lock and the main Grand Prix lock.
-                  </div>
+                  <TipForm
+                    title="Sprint Tip"
+                    draft={sprintDraft}
+                    setDraft={setSprintDraft}
+                    drivers={drivers}
+                    disabled={!roundStatus.sprintOpen}
+                    onSave={() => saveTip("sprint", sprintDraft)}
+                    saveLabel="Save sprint tip"
+                  />
                 ) : null}
 
-                <h3>Your tip</h3>
-
-                {[1, 2, 3].map((n) => (
-                  <select
-                    key={n}
-                    style={styles.input}
-                    disabled={roundStatus.locked}
-                    value={draft[`p${n}_driver_id`] || ""}
-                    onChange={(e) =>
-                      setDraft((prev) => ({
-                        ...prev,
-                        [`p${n}_driver_id`]: e.target.value
-                      }))
-                    }
-                  >
-                    <option value="">Pick P{n}</option>
-                    {drivers.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.name} · {d.team}
-                      </option>
-                    ))}
-                  </select>
-                ))}
-
-                <input
-                  style={styles.input}
-                  type="number"
-                  min="1"
-                  max="22"
-                  disabled={roundStatus.locked}
-                  placeholder="Oscar finish"
-                  value={draft.oscar_finish || ""}
-                  onChange={(e) =>
-                    setDraft((prev) => ({
-                      ...prev,
-                      oscar_finish: e.target.value
-                    }))
-                  }
+                <TipForm
+                  title="Grand Prix Tip"
+                  draft={raceDraft}
+                  setDraft={setRaceDraft}
+                  drivers={drivers}
+                  disabled={!roundStatus.raceOpen}
+                  onSave={() => saveTip("race", raceDraft)}
+                  saveLabel="Save Grand Prix tip"
                 />
-
-                <button
-                  style={styles.primary}
-                  onClick={saveTip}
-                  disabled={roundStatus.locked}
-                >
-                  {roundStatus.locked ? "Tips closed" : "Save tip"}
-                </button>
               </>
             ) : null}
           </div>
@@ -536,6 +548,13 @@ const styles = {
     border: "1px solid #2a2f3a",
     borderRadius: 16,
     padding: 20
+  },
+  subCard: {
+    background: "#11151c",
+    border: "1px solid #2a2f3a",
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 16
   },
   input: {
     width: "100%",
@@ -609,14 +628,5 @@ const styles = {
   },
   infoLabel: {
     color: "#9ca3af"
-  },
-  sprintNote: {
-    background: "#1b2230",
-    border: "1px solid #334155",
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 16,
-    color: "#dbeafe",
-    fontSize: 14
   }
 };
