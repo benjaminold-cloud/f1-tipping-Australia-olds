@@ -48,43 +48,41 @@ function Auth({ onReady }) {
   const [displayName, setDisplayName] = useState("");
   const [msg, setMsg] = useState("");
 
-  async function submit(e) {
-    e.preventDefault();
-    setMsg("");
+ async function submit(e) {
+  e.preventDefault();
+  setMsg("");
 
+  try {
     if (mode === "signup") {
-      const { data, error } = await supabase.auth.signUp({
+      const { error } = await supabase.auth.signUp({
         email,
         password,
         options: {
           data: { display_name: displayName || email.split("@")[0] }
         }
       });
+
       if (error) {
         setMsg(error.message);
         return;
       }
 
-      if (data.user) {
-        await supabase.from("profiles").upsert({
-          id: data.user.id,
-          email: data.user.email,
-          display_name: displayName || data.user.email.split("@")[0]
-        });
-      }
-
-      setMsg("Account created. Confirm email if prompted, then sign in.");
+      setMsg("Account created. Check your email if confirmation is required, then sign in.");
       return;
     }
 
     const { error } = await supabase.auth.signInWithPassword({ email, password });
+
     if (error) {
       setMsg(error.message);
       return;
     }
 
     onReady();
+  } catch (err) {
+    setMsg(err.message || "Something went wrong");
   }
+}
 
   return (
     <div style={styles.page}>
