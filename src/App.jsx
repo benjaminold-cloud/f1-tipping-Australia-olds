@@ -13,6 +13,7 @@ function fmt(dateStr) {
 
 function countdownText(targetDate, now) {
   if (!targetDate) return "TBC";
+
   const diff = new Date(targetDate).getTime() - now.getTime();
   if (diff <= 0) return "Closed";
 
@@ -28,7 +29,13 @@ function countdownText(targetDate, now) {
 
 function getRoundStatus(round, now) {
   if (!round) {
-    return { locked: true, nextLabel: "No round selected", nextTime: null };
+    return {
+      locked: true,
+      nextLabel: "No round selected",
+      nextTime: null,
+      sprintOpen: false,
+      raceOpen: false
+    };
   }
 
   const sprintLock = round.is_sprint ? round.sprint_lock_at : null;
@@ -63,6 +70,12 @@ function getRoundStatus(round, now) {
   };
 }
 
+// Scoring now set to:
+// - 2 points for exact position
+// - 1 point per driver if in top 3 but wrong position
+// - +3 extra if all top 3 in exact order
+// - no Oscar bonus for now
+// - sprint = half points
 function scoreTip(tip, result, isSprint) {
   if (!tip || !result) return 0;
 
@@ -70,20 +83,23 @@ function scoreTip(tip, result, isSprint) {
   const actual = [result.p1_driver_id, result.p2_driver_id, result.p3_driver_id];
 
   let points = 0;
-  let correctDrivers = 0;
 
   for (let i = 0; i < 3; i += 1) {
-    if (picks[i] === actual[i]) points += 2;
-    if (picks.includes(actual[i])) correctDrivers += 1;
+    if (!picks[i] || !actual[i]) continue;
+
+    if (picks[i] === actual[i]) {
+      points += 2;
+    } else if (actual.includes(picks[i])) {
+      points += 1;
+    }
   }
 
-  if (correctDrivers === 3) {
-    const exact = picks.every((d, i) => d === actual[i]);
-    points += exact ? 3 : 1;
-  }
+  const exactOrder =
+    picks.length === 3 &&
+    picks.every((driverId, idx) => driverId === actual[idx]);
 
-  if (Number(tip.oscar_finish) === Number(result.oscar_finish)) {
-    points += 2;
+  if (exactOrder) {
+    points += 3;
   }
 
   return isSprint ? points / 2 : points;
@@ -133,7 +149,7 @@ function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel 
         max="22"
         disabled={disabled}
         placeholder="Oscar finish"
-        value={draft.oscar_finish || ""}
+        value={draft.oscar_finish ?? ""}
         onChange={(e) =>
           setDraft((prev) => ({
             ...prev,
@@ -198,8 +214,12 @@ function Auth({ onReady }) {
         <h1>🏁 Olds F1 Tipping</h1>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-          <button type="button" onClick={() => setMode("signin")} style={styles.tab}>Sign in</button>
-          <button type="button" onClick={() => setMode("signup")} style={styles.tab}>Create account</button>
+          <button type="button" onClick={() => setMode("signin")} style={styles.tab}>
+            Sign in
+          </button>
+          <button type="button" onClick={() => setMode("signup")} style={styles.tab}>
+            Create account
+          </button>
         </div>
 
         <form onSubmit={submit}>
@@ -242,6 +262,7 @@ function Auth({ onReady }) {
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [profiles, setProfiles] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [rounds, setRounds] = useState([]);
   const [tips, setTips] = useState([]);
@@ -259,17 +280,20 @@ export default function App() {
 
   async function loadAll(userId) {
     const [
+      { data: profilesData },
       { data: driversData },
       { data: roundsData },
       { data: tipsData },
       { data: resultsData }
     ] = await Promise.all([
+      supabase.from("profiles").select("id, display_name").order("display_name"),
       supabase.from("drivers").select("*").order("name"),
       supabase.from("rounds").select("*").eq("season", 2026).order("round_number"),
       supabase.from("tips").select("*"),
       supabase.from("results").select("*")
     ]);
 
+    setProfiles(profilesData || []);
     setDrivers(driversData || []);
     setRounds(roundsData || []);
     setTips(tipsData || []);
@@ -297,6 +321,7 @@ export default function App() {
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       setSession(data.session);
+
       if (data.session?.user) {
         const { data: p } = await supabase
           .from("profiles")
@@ -309,7 +334,9 @@ export default function App() {
       }
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, sess) => {
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange(async (_event, sess) => {
       setSession(sess);
 
       if (sess?.user) {
@@ -326,7 +353,7 @@ export default function App() {
       }
     });
 
-    return () => listener.subscription.unsubscribe();
+    return () => subscription.unsubscribe();
   }, []);
 
   const activeRound = useMemo(
@@ -338,10 +365,16 @@ export default function App() {
     if (!activeRound || !session?.user) return;
 
     const mySprintTip = tips.find(
-      (t) => t.round_id === activeRound.id && t.user_id === session.user.id && t.result_type === "sprint"
+      (t) =>
+        t.round_id === activeRound.id &&
+        t.user_id === session.user.id &&
+        t.result_type === "sprint"
     );
     const myRaceTip = tips.find(
-      (t) => t.round_id === activeRound.id && t.user_id === session.user.id && t.result_type === "race"
+      (t) =>
+        t.round_id === activeRound.id &&
+        t.user_id === session.user.id &&
+        t.result_type === "race"
     );
 
     setSprintDraft(mySprintTip || blankTip("sprint"));
@@ -354,29 +387,34 @@ export default function App() {
   );
 
   const leaderboard = useMemo(() => {
+    const profileMap = new Map(
+      (profiles || []).map((p) => [p.id, p.display_name || "Player"])
+    );
+
     const byUser = new Map();
 
     tips.forEach((tip) => {
       if (!byUser.has(tip.user_id)) {
         byUser.set(tip.user_id, {
           user_id: tip.user_id,
-          name: tip.user_id === profile?.id ? profile?.display_name || "You" : "Player",
+          name: profileMap.get(tip.user_id) || "Player",
           total: 0
         });
       }
     });
 
     tips.forEach((tip) => {
-      const round = rounds.find((r) => r.id === tip.round_id);
       const result = results.find(
         (r) => r.round_id === tip.round_id && r.result_type === tip.result_type
       );
       const row = byUser.get(tip.user_id);
-      row.total += scoreTip(tip, result, tip.result_type === "sprint" || round?.is_sprint && tip.result_type === "sprint");
+      if (!row) return;
+
+      row.total += scoreTip(tip, result, tip.result_type === "sprint");
     });
 
     return [...byUser.values()].sort((a, b) => b.total - a.total);
-  }, [tips, results, rounds, profile]);
+  }, [tips, results, profiles]);
 
   async function saveTip(resultType, draft) {
     if (!session?.user || !activeRound) return;
@@ -420,7 +458,9 @@ export default function App() {
             <h1>🏁 Olds F1 Tipping 2026</h1>
             <p>Sprint tips are half points. Grand Prix tips are full points.</p>
           </div>
-          <button onClick={signOut} style={styles.primary}>Sign out</button>
+          <button onClick={signOut} style={styles.primary}>
+            Sign out
+          </button>
         </div>
 
         {msg ? <div style={styles.notice}>{msg}</div> : null}
@@ -436,7 +476,8 @@ export default function App() {
             >
               {rounds.map((r) => (
                 <option key={r.id} value={r.id}>
-                  R{r.round_number} · {r.grand_prix}{r.is_sprint ? " · Sprint Weekend" : ""}
+                  R{r.round_number} · {r.grand_prix}
+                  {r.is_sprint ? " · Sprint Weekend" : ""}
                 </option>
               ))}
             </select>
@@ -511,7 +552,9 @@ export default function App() {
             ) : (
               leaderboard.map((row, i) => (
                 <div key={row.user_id} style={styles.leaderRow}>
-                  <span>#{i + 1} {row.name}</span>
+                  <span>
+                    #{i + 1} {row.name}
+                  </span>
                   <strong>{row.total}</strong>
                 </div>
               ))
