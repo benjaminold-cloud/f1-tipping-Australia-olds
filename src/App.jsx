@@ -70,10 +70,10 @@ function getRoundStatus(round, now) {
   };
 }
 
-// Scoring now set to:
-// - 2 points for exact position
+// Current scoring:
+// - 2 points exact position
 // - 1 point per driver if in top 3 but wrong position
-// - +3 extra if all top 3 in exact order
+// - +3 extra if exact podium order
 // - no Oscar bonus for now
 // - sprint = half points
 function scoreTip(tip, result, isSprint) {
@@ -259,6 +259,45 @@ function Auth({ onReady }) {
   );
 }
 
+function ResultCard({ title, result, driverNameById }) {
+  if (!result) {
+    return (
+      <div style={styles.subCard}>
+        <h3>{title}</h3>
+        <p style={{ color: "#9ca3af", margin: 0 }}>No result loaded yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.subCard}>
+      <h3>{title}</h3>
+      <div style={styles.infoRow}>
+        <span style={styles.infoLabel}>P1</span>
+        <span>{driverNameById.get(result.p1_driver_id) || result.p1_driver_id || "-"}</span>
+      </div>
+      <div style={styles.infoRow}>
+        <span style={styles.infoLabel}>P2</span>
+        <span>{driverNameById.get(result.p2_driver_id) || result.p2_driver_id || "-"}</span>
+      </div>
+      <div style={styles.infoRow}>
+        <span style={styles.infoLabel}>P3</span>
+        <span>{driverNameById.get(result.p3_driver_id) || result.p3_driver_id || "-"}</span>
+      </div>
+      <div style={styles.infoRow}>
+        <span style={styles.infoLabel}>Oscar finish</span>
+        <span>{result.oscar_finish ?? "DNF / N/A"}</span>
+      </div>
+      {"source" in result ? (
+        <div style={styles.infoRow}>
+          <span style={styles.infoLabel}>Source</span>
+          <span>{result.source || "manual"}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -386,6 +425,24 @@ export default function App() {
     [activeRound, now]
   );
 
+  const driverNameById = useMemo(() => {
+    return new Map((drivers || []).map((d) => [d.id, d.name]));
+  }, [drivers]);
+
+  const selectedSprintResult = useMemo(() => {
+    if (!activeRound) return null;
+    return results.find(
+      (r) => r.round_id === activeRound.id && r.result_type === "sprint"
+    ) || null;
+  }, [results, activeRound]);
+
+  const selectedRaceResult = useMemo(() => {
+    if (!activeRound) return null;
+    return results.find(
+      (r) => r.round_id === activeRound.id && r.result_type === "race"
+    ) || null;
+  }, [results, activeRound]);
+
   const leaderboard = useMemo(() => {
     const profileMap = new Map(
       (profiles || []).map((p) => [p.id, p.display_name || "Player"])
@@ -452,7 +509,7 @@ export default function App() {
 
   return (
     <div style={styles.page}>
-      <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+      <div style={{ maxWidth: 1280, margin: "0 auto" }}>
         <div style={styles.header}>
           <div>
             <h1>🏁 Olds F1 Tipping 2026</h1>
@@ -545,20 +602,46 @@ export default function App() {
             ) : null}
           </div>
 
-          <div style={styles.card}>
-            <h2>Leaderboard</h2>
-            {leaderboard.length === 0 ? (
-              <p>No tips yet.</p>
-            ) : (
-              leaderboard.map((row, i) => (
-                <div key={row.user_id} style={styles.leaderRow}>
-                  <span>
-                    #{i + 1} {row.name}
-                  </span>
-                  <strong>{row.total}</strong>
-                </div>
-              ))
-            )}
+          <div style={styles.sideColumn}>
+            <div style={styles.card}>
+              <h2>Leaderboard</h2>
+              {leaderboard.length === 0 ? (
+                <p>No tips yet.</p>
+              ) : (
+                leaderboard.map((row, i) => (
+                  <div key={row.user_id} style={styles.leaderRow}>
+                    <span>
+                      #{i + 1} {row.name}
+                    </span>
+                    <strong>{row.total}</strong>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div style={styles.card}>
+              <h2>Results</h2>
+
+              {activeRound ? (
+                <>
+                  {activeRound.is_sprint ? (
+                    <ResultCard
+                      title="Sprint Result"
+                      result={selectedSprintResult}
+                      driverNameById={driverNameById}
+                    />
+                  ) : null}
+
+                  <ResultCard
+                    title="Grand Prix Result"
+                    result={selectedRaceResult}
+                    driverNameById={driverNameById}
+                  />
+                </>
+              ) : (
+                <p>No round selected.</p>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -585,6 +668,11 @@ const styles = {
     display: "grid",
     gridTemplateColumns: "1.15fr 0.85fr",
     gap: 24
+  },
+  sideColumn: {
+    display: "grid",
+    gap: 24,
+    alignContent: "start"
   },
   card: {
     background: "#171a21",
