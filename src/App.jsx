@@ -48,18 +48,46 @@ function Auth({ onReady }) {
   const [displayName, setDisplayName] = useState("");
   const [msg, setMsg] = useState("");
 
- async function submit(e) {
-  e.preventDefault();
-  setMsg("");
-
-  try {
-    if (mode === "signup") {
-      const { error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: { display_name: displayName || email.split("@")[0] }
+  useEffect(() => {
+    async function testConnection() {
+      try {
+        const { error } = await supabase.auth.getSession();
+        if (error) {
+          setMsg(`Session test error: ${error.message}`);
         }
+      } catch (err) {
+        setMsg(`Connection failed: ${err.message}`);
+      }
+    }
+    testConnection();
+  }, []);
+
+  async function submit(e) {
+    e.preventDefault();
+    setMsg("");
+
+    try {
+      if (mode === "signup") {
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: { display_name: displayName || email.split("@")[0] }
+          }
+        });
+
+        if (error) {
+          setMsg(error.message);
+          return;
+        }
+
+        setMsg("Account created. Check your email if confirmation is required, then sign in.");
+        return;
+      }
+
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password
       });
 
       if (error) {
@@ -67,31 +95,35 @@ function Auth({ onReady }) {
         return;
       }
 
-      setMsg("Account created. Check your email if confirmation is required, then sign in.");
-      return;
+      onReady();
+    } catch (err) {
+      console.error("Signup/signin error", err);
+      setMsg(err?.message || "Something went wrong");
     }
-
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-
-    if (error) {
-      setMsg(error.message);
-      return;
-    }
-
-    onReady();
-  } catch (err) {
-    setMsg(err.message || "Something went wrong");
   }
-}
 
   return (
     <div style={styles.page}>
       <div style={styles.card}>
         <h1>🏁 Olds F1 Tipping</h1>
+
         <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-          <button onClick={() => setMode("signin")} style={styles.tab}>Sign in</button>
-          <button onClick={() => setMode("signup")} style={styles.tab}>Create account</button>
+          <button
+            type="button"
+            onClick={() => setMode("signin")}
+            style={styles.tab}
+          >
+            Sign in
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("signup")}
+            style={styles.tab}
+          >
+            Create account
+          </button>
         </div>
+
         <form onSubmit={submit}>
           {mode === "signup" && (
             <input
@@ -101,6 +133,7 @@ function Auth({ onReady }) {
               onChange={(e) => setDisplayName(e.target.value)}
             />
           )}
+
           <input
             style={styles.input}
             placeholder="Email"
@@ -108,6 +141,7 @@ function Auth({ onReady }) {
             onChange={(e) => setEmail(e.target.value)}
             type="email"
           />
+
           <input
             style={styles.input}
             placeholder="Password"
@@ -115,11 +149,13 @@ function Auth({ onReady }) {
             onChange={(e) => setPassword(e.target.value)}
             type="password"
           />
+
           <button style={styles.primary} type="submit">
             {mode === "signup" ? "Create account" : "Sign in"}
           </button>
         </form>
-        {msg ? <p>{msg}</p> : null}
+
+        {msg ? <p style={{ marginTop: 16 }}>{msg}</p> : null}
       </div>
     </div>
   );
@@ -142,47 +178,77 @@ export default function App() {
   const [msg, setMsg] = useState("");
 
   async function loadAll(userId) {
-    const [{ data: driversData }, { data: roundsData }, { data: tipsData }, { data: resultsData }] =
-      await Promise.all([
-        supabase.from("drivers").select("*").order("name"),
-        supabase.from("rounds").select("*").eq("season", 2026).order("round_number"),
-        supabase.from("tips").select("*"),
-        supabase.from("results").select("*")
-      ]);
+    const [
+      { data: driversData },
+      { data: roundsData },
+      { data: tipsData },
+      { data: resultsData }
+    ] = await Promise.all([
+      supabase.from("drivers").select("*").order("name"),
+      supabase.from("rounds").select("*").eq("season", 2026).order("round_number"),
+      supabase.from("tips").select("*"),
+      supabase.from("results").select("*")
+    ]);
 
     setDrivers(driversData || []);
     setRounds(roundsData || []);
     setTips(tipsData || []);
     setResults(resultsData || []);
 
-    const firstOpen = (roundsData || []).find((r) => !isLocked(r)) || (roundsData || [])[0];
+    const firstOpen =
+      (roundsData || []).find((r) => !isLocked(r)) || (roundsData || [])[0];
+
     if (firstOpen) {
       setActiveRoundId(firstOpen.id);
-      const myTip = (tipsData || []).find((t) => t.round_id === firstOpen.id && t.user_id === userId);
+      const myTip = (tipsData || []).find(
+        (t) => t.round_id === firstOpen.id && t.user_id === userId
+      );
       if (myTip) setDraft(myTip);
+      else {
+        setDraft({
+          p1_driver_id: "",
+          p2_driver_id: "",
+          p3_driver_id: "",
+          oscar_finish: ""
+        });
+      }
     }
   }
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       setSession(data.session);
+
       if (data.session?.user) {
-        const { data: p } = await supabase.from("profiles").select("*").eq("id", data.session.user.id).single();
-        setProfile(p);
+        const { data: p } = await supabase
+          .from("profiles")
+          .select("*")
+          .eq("id", data.session.user.id)
+          .maybeSingle();
+
+        setProfile(p || null);
         await loadAll(data.session.user.id);
       }
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, sess) => {
-      setSession(sess);
-      if (sess?.user) {
-        const { data: p } = await supabase.from("profiles").select("*").eq("id", sess.user.id).single();
-        setProfile(p);
-        await loadAll(sess.user.id);
-      } else {
-        setProfile(null);
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      async (_event, sess) => {
+        setSession(sess);
+
+        if (sess?.user) {
+          const { data: p } = await supabase
+            .from("profiles")
+            .select("*")
+            .eq("id", sess.user.id)
+            .maybeSingle();
+
+          setProfile(p || null);
+          await loadAll(sess.user.id);
+        } else {
+          setProfile(null);
+        }
       }
-    });
+    );
 
     return () => listener.subscription.unsubscribe();
   }, []);
@@ -199,7 +265,7 @@ export default function App() {
       if (!byUser.has(tip.user_id)) {
         byUser.set(tip.user_id, {
           user_id: tip.user_id,
-          name: tip.user_id === profile?.id ? (profile?.display_name || "You") : "Player",
+          name: tip.user_id === profile?.id ? profile?.display_name || "You" : "Player",
           total: 0
         });
       }
@@ -207,8 +273,12 @@ export default function App() {
 
     tips.forEach((tip) => {
       const round = rounds.find((r) => r.id === tip.round_id);
-      const raceResult = results.find((r) => r.round_id === tip.round_id && r.result_type === "race");
-      const sprintResult = results.find((r) => r.round_id === tip.round_id && r.result_type === "sprint");
+      const raceResult = results.find(
+        (r) => r.round_id === tip.round_id && r.result_type === "race"
+      );
+      const sprintResult = results.find(
+        (r) => r.round_id === tip.round_id && r.result_type === "sprint"
+      );
       const row = byUser.get(tip.user_id);
       row.total += scoreTip(tip, raceResult, false);
       if (round?.is_sprint) row.total += scoreTip(tip, sprintResult, true);
@@ -230,7 +300,10 @@ export default function App() {
       updated_at: new Date().toISOString()
     };
 
-    const { error } = await supabase.from("tips").upsert(payload, { onConflict: "round_id,user_id" });
+    const { error } = await supabase
+      .from("tips")
+      .upsert(payload, { onConflict: "round_id,user_id" });
+
     if (error) {
       setMsg(error.message);
       return;
@@ -254,7 +327,9 @@ export default function App() {
             <h1>🏁 Olds F1 Tipping 2026</h1>
             <p>Top 3 + Oscar finish. Sprint races score half points.</p>
           </div>
-          <button onClick={signOut} style={styles.primary}>Sign out</button>
+          <button onClick={signOut} style={styles.primary}>
+            Sign out
+          </button>
         </div>
 
         {msg ? <div style={styles.notice}>{msg}</div> : null}
@@ -262,6 +337,7 @@ export default function App() {
         <div style={styles.grid}>
           <div style={styles.card}>
             <h2>Rounds</h2>
+
             <select
               style={styles.input}
               value={activeRoundId || ""}
@@ -281,13 +357,19 @@ export default function App() {
                 <p><strong>Status:</strong> {isLocked(activeRound) ? "Locked" : "Open"}</p>
 
                 <h3>Your tip</h3>
+
                 {[1, 2, 3].map((n) => (
                   <select
                     key={n}
                     style={styles.input}
                     disabled={isLocked(activeRound)}
                     value={draft[`p${n}_driver_id`] || ""}
-                    onChange={(e) => setDraft((prev) => ({ ...prev, [`p${n}_driver_id`]: e.target.value }))}
+                    onChange={(e) =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        [`p${n}_driver_id`]: e.target.value
+                      }))
+                    }
                   >
                     <option value="">Pick P{n}</option>
                     {drivers.map((d) => (
@@ -306,10 +388,19 @@ export default function App() {
                   disabled={isLocked(activeRound)}
                   placeholder="Oscar finish"
                   value={draft.oscar_finish || ""}
-                  onChange={(e) => setDraft((prev) => ({ ...prev, oscar_finish: e.target.value }))}
+                  onChange={(e) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      oscar_finish: e.target.value
+                    }))
+                  }
                 />
 
-                <button style={styles.primary} onClick={saveTip} disabled={isLocked(activeRound)}>
+                <button
+                  style={styles.primary}
+                  onClick={saveTip}
+                  disabled={isLocked(activeRound)}
+                >
                   {isLocked(activeRound) ? "Round locked" : "Save tip"}
                 </button>
               </>
