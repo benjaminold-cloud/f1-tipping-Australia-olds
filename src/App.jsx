@@ -70,11 +70,11 @@ function getRoundStatus(round, now) {
   };
 }
 
-// Current scoring:
-// - 2 points exact position
-// - 1 point per driver if in top 3 but wrong position
-// - +3 extra if exact podium order
-// - no Oscar bonus for now
+// Scoring:
+// - 2 points for each driver in correct position
+// - 1 point for each driver in top 3 but wrong position
+// - +1 bonus if all top 3 picked but wrong order
+// - +3 bonus if all top 3 in exact order
 // - sprint = half points
 function scoreTip(tip, result, isSprint) {
   if (!tip || !result) return 0;
@@ -94,12 +94,16 @@ function scoreTip(tip, result, isSprint) {
     }
   }
 
+  const pickedAllTop3 =
+    actual.length === 3 &&
+    actual.every((driverId) => picks.includes(driverId));
+
   const exactOrder =
     picks.length === 3 &&
     picks.every((driverId, idx) => driverId === actual[idx]);
 
-  if (exactOrder) {
-    points += 3;
+  if (pickedAllTop3) {
+    points += exactOrder ? 3 : 1;
   }
 
   return isSprint ? points / 2 : points;
@@ -118,7 +122,7 @@ function blankTip(resultType) {
 function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel }) {
   return (
     <div style={styles.subCard}>
-      <h3>{title}</h3>
+      <h3 style={styles.sectionTitle}>{title}</h3>
 
       {[1, 2, 3].map((n) => (
         <select
@@ -210,50 +214,52 @@ function Auth({ onReady }) {
 
   return (
     <div style={styles.page}>
-      <div style={styles.card}>
-        <h1>🏁 Olds F1 Tipping</h1>
+      <div style={styles.authWrap}>
+        <div style={styles.card}>
+          <h1 style={{ marginTop: 0 }}>🏁 Olds F1 Tipping</h1>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-          <button type="button" onClick={() => setMode("signin")} style={styles.tab}>
-            Sign in
-          </button>
-          <button type="button" onClick={() => setMode("signup")} style={styles.tab}>
-            Create account
-          </button>
-        </div>
+          <div style={styles.tabRow}>
+            <button type="button" onClick={() => setMode("signin")} style={styles.tabButton}>
+              Sign in
+            </button>
+            <button type="button" onClick={() => setMode("signup")} style={styles.tabButton}>
+              Create account
+            </button>
+          </div>
 
-        <form onSubmit={submit}>
-          {mode === "signup" && (
+          <form onSubmit={submit}>
+            {mode === "signup" && (
+              <input
+                style={styles.input}
+                placeholder="Display name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+              />
+            )}
+
             <input
               style={styles.input}
-              placeholder="Display name"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              type="email"
             />
-          )}
 
-          <input
-            style={styles.input}
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            type="email"
-          />
+            <input
+              style={styles.input}
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+            />
 
-          <input
-            style={styles.input}
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            type="password"
-          />
+            <button style={styles.primary} type="submit">
+              {mode === "signup" ? "Create account" : "Sign in"}
+            </button>
+          </form>
 
-          <button style={styles.primary} type="submit">
-            {mode === "signup" ? "Create account" : "Sign in"}
-          </button>
-        </form>
-
-        {msg ? <p style={{ marginTop: 16 }}>{msg}</p> : null}
+          {msg ? <p style={{ marginTop: 16 }}>{msg}</p> : null}
+        </div>
       </div>
     </div>
   );
@@ -263,15 +269,15 @@ function ResultCard({ title, result, driverNameById }) {
   if (!result) {
     return (
       <div style={styles.subCard}>
-        <h3>{title}</h3>
-        <p style={{ color: "#9ca3af", margin: 0 }}>No result loaded yet.</p>
+        <h3 style={styles.sectionTitle}>{title}</h3>
+        <p style={styles.mutedText}>No result loaded yet.</p>
       </div>
     );
   }
 
   return (
     <div style={styles.subCard}>
-      <h3>{title}</h3>
+      <h3 style={styles.sectionTitle}>{title}</h3>
       <div style={styles.infoRow}>
         <span style={styles.infoLabel}>P1</span>
         <span>{driverNameById.get(result.p1_driver_id) || result.p1_driver_id || "-"}</span>
@@ -298,6 +304,32 @@ function ResultCard({ title, result, driverNameById }) {
   );
 }
 
+function TipsCard({ title, tips, profilesById, driverNameById }) {
+  if (!tips.length) {
+    return (
+      <div style={styles.subCard}>
+        <h3 style={styles.sectionTitle}>{title}</h3>
+        <p style={styles.mutedText}>No tips submitted yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.subCard}>
+      <h3 style={styles.sectionTitle}>{title}</h3>
+      {tips.map((tip) => (
+        <div key={`${tip.user_id}-${tip.result_type}`} style={styles.tipEntry}>
+          <div style={styles.tipName}>{profilesById.get(tip.user_id) || "Player"}</div>
+          <div style={styles.tipLine}>P1: {driverNameById.get(tip.p1_driver_id) || "-"}</div>
+          <div style={styles.tipLine}>P2: {driverNameById.get(tip.p2_driver_id) || "-"}</div>
+          <div style={styles.tipLine}>P3: {driverNameById.get(tip.p3_driver_id) || "-"}</div>
+          <div style={styles.tipLine}>Oscar: {tip.oscar_finish ?? "-"}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -311,6 +343,7 @@ export default function App() {
   const [raceDraft, setRaceDraft] = useState(blankTip("race"));
   const [msg, setMsg] = useState("");
   const [now, setNow] = useState(new Date());
+  const [activeTab, setActiveTab] = useState("tips");
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
@@ -429,6 +462,10 @@ export default function App() {
     return new Map((drivers || []).map((d) => [d.id, d.name]));
   }, [drivers]);
 
+  const profilesById = useMemo(() => {
+    return new Map((profiles || []).map((p) => [p.id, p.display_name || "Player"]));
+  }, [profiles]);
+
   const selectedSprintResult = useMemo(() => {
     if (!activeRound) return null;
     return results.find(
@@ -443,18 +480,28 @@ export default function App() {
     ) || null;
   }, [results, activeRound]);
 
-  const leaderboard = useMemo(() => {
-    const profileMap = new Map(
-      (profiles || []).map((p) => [p.id, p.display_name || "Player"])
+  const selectedSprintTips = useMemo(() => {
+    if (!activeRound) return [];
+    return tips.filter(
+      (t) => t.round_id === activeRound.id && t.result_type === "sprint"
     );
+  }, [tips, activeRound]);
 
+  const selectedRaceTips = useMemo(() => {
+    if (!activeRound) return [];
+    return tips.filter(
+      (t) => t.round_id === activeRound.id && t.result_type === "race"
+    );
+  }, [tips, activeRound]);
+
+  const leaderboard = useMemo(() => {
     const byUser = new Map();
 
     tips.forEach((tip) => {
       if (!byUser.has(tip.user_id)) {
         byUser.set(tip.user_id, {
           user_id: tip.user_id,
-          name: profileMap.get(tip.user_id) || "Player",
+          name: profilesById.get(tip.user_id) || "Player",
           total: 0
         });
       }
@@ -471,7 +518,7 @@ export default function App() {
     });
 
     return [...byUser.values()].sort((a, b) => b.total - a.total);
-  }, [tips, results, profiles]);
+  }, [tips, results, profilesById]);
 
   async function saveTip(resultType, draft) {
     if (!session?.user || !activeRound) return;
@@ -509,11 +556,11 @@ export default function App() {
 
   return (
     <div style={styles.page}>
-      <div style={{ maxWidth: 1280, margin: "0 auto" }}>
+      <div style={styles.appWrap}>
         <div style={styles.header}>
           <div>
-            <h1>🏁 Olds F1 Tipping 2026</h1>
-            <p>Sprint tips are half points. Grand Prix tips are full points.</p>
+            <h1 style={styles.pageTitle}>🏁 Olds F1 Tipping 2026</h1>
+            <p style={styles.pageSub}>Sprint tips are half points. Grand Prix tips are full points.</p>
           </div>
           <button onClick={signOut} style={styles.primary}>
             Sign out
@@ -522,128 +569,175 @@ export default function App() {
 
         {msg ? <div style={styles.notice}>{msg}</div> : null}
 
-        <div style={styles.grid}>
-          <div style={styles.card}>
-            <h2>Rounds</h2>
+        <div style={styles.card}>
+          <h2 style={styles.sectionTitle}>Round</h2>
 
-            <select
-              style={styles.input}
-              value={activeRoundId || ""}
-              onChange={(e) => setActiveRoundId(Number(e.target.value))}
-            >
-              {rounds.map((r) => (
-                <option key={r.id} value={r.id}>
-                  R{r.round_number} · {r.grand_prix}
-                  {r.is_sprint ? " · Sprint Weekend" : ""}
-                </option>
-              ))}
-            </select>
+          <select
+            style={styles.input}
+            value={activeRoundId || ""}
+            onChange={(e) => setActiveRoundId(Number(e.target.value))}
+          >
+            {rounds.map((r) => (
+              <option key={r.id} value={r.id}>
+                R{r.round_number} · {r.grand_prix}
+                {r.is_sprint ? " · Sprint Weekend" : ""}
+              </option>
+            ))}
+          </select>
 
-            {activeRound ? (
-              <>
-                <div style={styles.countdownBox}>
-                  <div style={styles.countdownLabel}>{roundStatus.nextLabel}</div>
-                  <div style={styles.countdownValue}>
-                    {countdownText(roundStatus.nextTime, now)}
-                  </div>
+          {activeRound ? (
+            <>
+              <div style={styles.countdownBox}>
+                <div style={styles.countdownLabel}>{roundStatus.nextLabel}</div>
+                <div style={styles.countdownValue}>
+                  {countdownText(roundStatus.nextTime, now)}
+                </div>
+              </div>
+
+              <div style={styles.infoBlock}>
+                <div style={styles.infoRow}>
+                  <span style={styles.infoLabel}>Grand Prix</span>
+                  <span>{activeRound.grand_prix}</span>
                 </div>
 
-                <div style={styles.infoBlock}>
-                  <div style={styles.infoRow}>
-                    <span style={styles.infoLabel}>Grand Prix</span>
-                    <span>{activeRound.grand_prix}</span>
-                  </div>
-
-                  <div style={styles.infoRow}>
-                    <span style={styles.infoLabel}>Weekend type</span>
-                    <span>{activeRound.is_sprint ? "Sprint Weekend" : "Grand Prix Weekend"}</span>
-                  </div>
-
-                  {activeRound.is_sprint ? (
-                    <div style={styles.infoRow}>
-                      <span style={styles.infoLabel}>Sprint tips lock</span>
-                      <span>{fmt(activeRound.sprint_lock_at)}</span>
-                    </div>
-                  ) : null}
-
-                  <div style={styles.infoRow}>
-                    <span style={styles.infoLabel}>Grand Prix tips lock</span>
-                    <span>{fmt(activeRound.race_lock_at || activeRound.tips_close)}</span>
-                  </div>
-
-                  <div style={styles.infoRow}>
-                    <span style={styles.infoLabel}>Grand Prix start</span>
-                    <span>{fmt(activeRound.race_start)}</span>
-                  </div>
+                <div style={styles.infoRow}>
+                  <span style={styles.infoLabel}>Weekend type</span>
+                  <span>{activeRound.is_sprint ? "Sprint Weekend" : "Grand Prix Weekend"}</span>
                 </div>
 
                 {activeRound.is_sprint ? (
-                  <TipForm
-                    title="Sprint Tip"
-                    draft={sprintDraft}
-                    setDraft={setSprintDraft}
-                    drivers={drivers}
-                    disabled={!roundStatus.sprintOpen}
-                    onSave={() => saveTip("sprint", sprintDraft)}
-                    saveLabel="Save sprint tip"
-                  />
+                  <div style={styles.infoRow}>
+                    <span style={styles.infoLabel}>Sprint tips lock</span>
+                    <span>{fmt(activeRound.sprint_lock_at)}</span>
+                  </div>
                 ) : null}
 
-                <TipForm
-                  title="Grand Prix Tip"
-                  draft={raceDraft}
-                  setDraft={setRaceDraft}
-                  drivers={drivers}
-                  disabled={!roundStatus.raceOpen}
-                  onSave={() => saveTip("race", raceDraft)}
-                  saveLabel="Save Grand Prix tip"
-                />
-              </>
-            ) : null}
-          </div>
+                <div style={styles.infoRow}>
+                  <span style={styles.infoLabel}>Grand Prix tips lock</span>
+                  <span>{fmt(activeRound.race_lock_at || activeRound.tips_close)}</span>
+                </div>
 
-          <div style={styles.sideColumn}>
-            <div style={styles.card}>
-              <h2>Leaderboard</h2>
-              {leaderboard.length === 0 ? (
-                <p>No tips yet.</p>
-              ) : (
-                leaderboard.map((row, i) => (
-                  <div key={row.user_id} style={styles.leaderRow}>
-                    <span>
-                      #{i + 1} {row.name}
-                    </span>
-                    <strong>{row.total}</strong>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div style={styles.card}>
-              <h2>Results</h2>
-
-              {activeRound ? (
-                <>
-                  {activeRound.is_sprint ? (
-                    <ResultCard
-                      title="Sprint Result"
-                      result={selectedSprintResult}
-                      driverNameById={driverNameById}
-                    />
-                  ) : null}
-
-                  <ResultCard
-                    title="Grand Prix Result"
-                    result={selectedRaceResult}
-                    driverNameById={driverNameById}
-                  />
-                </>
-              ) : (
-                <p>No round selected.</p>
-              )}
-            </div>
-          </div>
+                <div style={styles.infoRow}>
+                  <span style={styles.infoLabel}>Grand Prix start</span>
+                  <span>{fmt(activeRound.race_start)}</span>
+                </div>
+              </div>
+            </>
+          ) : null}
         </div>
+
+        <div style={styles.tabRow}>
+          <button
+            type="button"
+            style={activeTab === "tips" ? styles.activeTabButton : styles.tabButton}
+            onClick={() => setActiveTab("tips")}
+          >
+            Tips
+          </button>
+          <button
+            type="button"
+            style={activeTab === "leaderboard" ? styles.activeTabButton : styles.tabButton}
+            onClick={() => setActiveTab("leaderboard")}
+          >
+            Leaderboard
+          </button>
+          <button
+            type="button"
+            style={activeTab === "results" ? styles.activeTabButton : styles.tabButton}
+            onClick={() => setActiveTab("results")}
+          >
+            Results
+          </button>
+          <button
+            type="button"
+            style={activeTab === "picks" ? styles.activeTabButton : styles.tabButton}
+            onClick={() => setActiveTab("picks")}
+          >
+            Round Picks
+          </button>
+        </div>
+
+        {activeTab === "tips" ? (
+          <div style={styles.stack}>
+            {activeRound?.is_sprint ? (
+              <TipForm
+                title="Sprint Tip"
+                draft={sprintDraft}
+                setDraft={setSprintDraft}
+                drivers={drivers}
+                disabled={!roundStatus.sprintOpen}
+                onSave={() => saveTip("sprint", sprintDraft)}
+                saveLabel="Save sprint tip"
+              />
+            ) : null}
+
+            <TipForm
+              title="Grand Prix Tip"
+              draft={raceDraft}
+              setDraft={setRaceDraft}
+              drivers={drivers}
+              disabled={!roundStatus.raceOpen}
+              onSave={() => saveTip("race", raceDraft)}
+              saveLabel="Save Grand Prix tip"
+            />
+          </div>
+        ) : null}
+
+        {activeTab === "leaderboard" ? (
+          <div style={styles.card}>
+            <h2 style={styles.sectionTitle}>Leaderboard</h2>
+            {leaderboard.length === 0 ? (
+              <p>No tips yet.</p>
+            ) : (
+              leaderboard.map((row, i) => (
+                <div key={row.user_id} style={styles.leaderRow}>
+                  <span>
+                    #{i + 1} {row.name}
+                  </span>
+                  <strong>{row.total}</strong>
+                </div>
+              ))
+            )}
+          </div>
+        ) : null}
+
+        {activeTab === "results" ? (
+          <div style={styles.stack}>
+            {activeRound?.is_sprint ? (
+              <ResultCard
+                title="Sprint Result"
+                result={selectedSprintResult}
+                driverNameById={driverNameById}
+              />
+            ) : null}
+
+            <ResultCard
+              title="Grand Prix Result"
+              result={selectedRaceResult}
+              driverNameById={driverNameById}
+            />
+          </div>
+        ) : null}
+
+        {activeTab === "picks" ? (
+          <div style={styles.stack}>
+            {activeRound?.is_sprint ? (
+              <TipsCard
+                title="Sprint Tips"
+                tips={selectedSprintTips}
+                profilesById={profilesById}
+                driverNameById={driverNameById}
+              />
+            ) : null}
+
+            <TipsCard
+              title="Grand Prix Tips"
+              tips={selectedRaceTips}
+              profilesById={profilesById}
+              driverNameById={driverNameById}
+            />
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -654,38 +748,53 @@ const styles = {
     minHeight: "100vh",
     background: "#0f1115",
     color: "white",
-    padding: 24,
+    padding: 12,
     fontFamily: "Arial, sans-serif"
+  },
+  appWrap: {
+    maxWidth: 900,
+    margin: "0 auto"
+  },
+  authWrap: {
+    maxWidth: 480,
+    margin: "0 auto"
   },
   header: {
     display: "flex",
     justifyContent: "space-between",
     gap: 16,
     alignItems: "center",
-    marginBottom: 24
+    marginBottom: 16,
+    flexWrap: "wrap"
   },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "1.15fr 0.85fr",
-    gap: 24
+  pageTitle: {
+    margin: 0,
+    fontSize: 28
   },
-  sideColumn: {
+  pageSub: {
+    marginTop: 6,
+    marginBottom: 0,
+    color: "#9ca3af"
+  },
+  stack: {
     display: "grid",
-    gap: 24,
-    alignContent: "start"
+    gap: 16
   },
   card: {
     background: "#171a21",
     border: "1px solid #2a2f3a",
     borderRadius: 16,
-    padding: 20
+    padding: 16,
+    marginBottom: 16
   },
   subCard: {
     background: "#11151c",
     border: "1px solid #2a2f3a",
     borderRadius: 14,
-    padding: 16,
-    marginBottom: 16
+    padding: 16
+  },
+  sectionTitle: {
+    marginTop: 0
   },
   input: {
     width: "100%",
@@ -694,7 +803,8 @@ const styles = {
     border: "1px solid #333",
     marginBottom: 12,
     background: "#0f1115",
-    color: "white"
+    color: "white",
+    boxSizing: "border-box"
   },
   primary: {
     padding: "12px 16px",
@@ -705,14 +815,29 @@ const styles = {
     fontWeight: 700,
     cursor: "pointer"
   },
-  tab: {
-    flex: 1,
-    padding: 10,
+  tabRow: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, 1fr)",
+    gap: 8,
+    marginBottom: 16
+  },
+  tabButton: {
+    padding: 12,
     borderRadius: 10,
     border: "1px solid #333",
-    background: "#0f1115",
+    background: "#11151c",
     color: "white",
-    cursor: "pointer"
+    cursor: "pointer",
+    fontWeight: 600
+  },
+  activeTabButton: {
+    padding: 12,
+    borderRadius: 10,
+    border: "1px solid #555",
+    background: "white",
+    color: "black",
+    cursor: "pointer",
+    fontWeight: 700
   },
   notice: {
     background: "#171a21",
@@ -747,8 +872,7 @@ const styles = {
     background: "#11151c",
     border: "1px solid #2a2f3a",
     borderRadius: 14,
-    padding: 14,
-    marginBottom: 16
+    padding: 14
   },
   infoRow: {
     display: "flex",
@@ -759,5 +883,22 @@ const styles = {
   },
   infoLabel: {
     color: "#9ca3af"
+  },
+  tipEntry: {
+    padding: "10px 0",
+    borderBottom: "1px solid #232833"
+  },
+  tipName: {
+    fontWeight: 700,
+    marginBottom: 6
+  },
+  tipLine: {
+    color: "#d1d5db",
+    fontSize: 14,
+    marginBottom: 3
+  },
+  mutedText: {
+    color: "#9ca3af",
+    margin: 0
   }
 };
