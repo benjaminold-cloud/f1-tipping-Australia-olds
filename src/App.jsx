@@ -520,6 +520,329 @@ function TipsCard({ title, tips, profilesById, driverMap, result, isSprint }) {
   );
 }
 
+function ProfilePanel({ session, profile, setMsg, reloadData }) {
+  const [displayName, setDisplayName] = useState(profile?.display_name || "");
+  const [email, setEmail] = useState(session?.user?.email || "");
+  const [password, setPassword] = useState("");
+
+  useEffect(() => {
+    setDisplayName(profile?.display_name || "");
+  }, [profile]);
+
+  useEffect(() => {
+    setEmail(session?.user?.email || "");
+  }, [session]);
+
+  async function saveProfile() {
+    try {
+      const updates = [];
+      let authChanged = false;
+
+      if (displayName !== (profile?.display_name || "")) {
+        const { error } = await supabase
+          .from("profiles")
+          .update({ display_name: displayName })
+          .eq("id", session.user.id);
+
+        if (error) throw error;
+        updates.push("name");
+      }
+
+      if (email && email !== (session?.user?.email || "")) {
+        const { error } = await supabase.auth.updateUser({ email });
+        if (error) throw error;
+        updates.push("email");
+        authChanged = true;
+      }
+
+      if (password) {
+        const { error } = await supabase.auth.updateUser({ password });
+        if (error) throw error;
+        updates.push("password");
+        authChanged = true;
+        setPassword("");
+      }
+
+      setMsg(
+        updates.length
+          ? `Updated ${updates.join(", ")}`
+          : "No profile changes made"
+      );
+
+      await reloadData();
+
+      if (authChanged) {
+        setMsg("Profile updated. If you changed email, check your inbox for confirmation.");
+      }
+    } catch (err) {
+      setMsg(err?.message || "Failed to update profile");
+    }
+  }
+
+  return (
+    <div style={styles.subCard}>
+      <h3 style={styles.sectionTitle}>Profile</h3>
+
+      <input
+        style={styles.input}
+        placeholder="Display name"
+        value={displayName}
+        onChange={(e) => setDisplayName(e.target.value)}
+      />
+
+      <input
+        style={styles.input}
+        placeholder="Email"
+        type="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+      />
+
+      <input
+        style={styles.input}
+        placeholder="New password"
+        type="password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+
+      <button style={styles.primary} onClick={saveProfile}>
+        Save profile
+      </button>
+    </div>
+  );
+}
+
+function AdminCreateUserPanel({ setMsg, reloadData }) {
+  const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("OldsF1Start!");
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  async function createUser() {
+    try {
+      setSaving(true);
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token;
+
+      if (!accessToken) {
+        throw new Error("No active session");
+      }
+
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-create-user`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`
+          },
+          body: JSON.stringify({
+            display_name: displayName,
+            email,
+            password,
+            is_admin: isAdmin
+          })
+        }
+      );
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || "Failed to create user");
+      }
+
+      setMsg(`Created user: ${data.display_name} (${data.email})`);
+      setDisplayName("");
+      setEmail("");
+      setPassword("OldsF1Start!");
+      setIsAdmin(false);
+      await reloadData();
+    } catch (err) {
+      setMsg(err?.message || "Failed to create user");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={styles.subCard}>
+      <h3 style={styles.sectionTitle}>Admin: Create User</h3>
+
+      <input
+        style={styles.input}
+        placeholder="Display name"
+        value={displayName}
+        onChange={(e) => setDisplayName(e.target.value)}
+      />
+
+      <input
+        style={styles.input}
+        placeholder="Email (e.g. chris.smith@oldsf1.local)"
+        type="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+      />
+
+      <input
+        style={styles.input}
+        placeholder="Temporary password"
+        type="text"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+
+      <label style={styles.checkboxRow}>
+        <input
+          type="checkbox"
+          checked={isAdmin}
+          onChange={(e) => setIsAdmin(e.target.checked)}
+        />
+        <span>Make admin</span>
+      </label>
+
+      <button style={styles.primary} onClick={createUser} disabled={saving}>
+        {saving ? "Creating..." : "Create user"}
+      </button>
+    </div>
+  );
+}
+
+function AdminUserTipPanel({
+  rounds,
+  profiles,
+  drivers,
+  setMsg,
+  reloadData
+}) {
+  const [roundId, setRoundId] = useState("");
+  const [userId, setUserId] = useState("");
+  const [resultType, setResultType] = useState("race");
+  const [draft, setDraft] = useState(blankTip("race"));
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDraft(blankTip(resultType));
+  }, [resultType]);
+
+  async function saveTipForUser() {
+    try {
+      setSaving(true);
+
+      if (!roundId || !userId) {
+        throw new Error("Select a round and player");
+      }
+
+      const payload = {
+        round_id: Number(roundId),
+        user_id: userId,
+        result_type: resultType,
+        p1_driver_id: draft.p1_driver_id || null,
+        p2_driver_id: draft.p2_driver_id || null,
+        p3_driver_id: draft.p3_driver_id || null,
+        oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
+        updated_at: new Date().toISOString()
+      };
+
+      const { error } = await supabase
+        .from("tips")
+        .upsert(payload, { onConflict: "round_id,user_id,result_type" });
+
+      if (error) throw error;
+
+      setMsg("Admin tip saved");
+      await reloadData();
+    } catch (err) {
+      setMsg(err?.message || "Failed to save tip");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={styles.subCard}>
+      <h3 style={styles.sectionTitle}>Admin: Enter Picks For Any User</h3>
+
+      <select
+        style={styles.input}
+        value={roundId}
+        onChange={(e) => setRoundId(e.target.value)}
+      >
+        <option value="">Select round</option>
+        {rounds.map((r) => (
+          <option key={r.id} value={r.id}>
+            R{r.round_number} · {r.grand_prix} {r.is_sprint ? "· Sprint" : ""}
+          </option>
+        ))}
+      </select>
+
+      <select
+        style={styles.input}
+        value={userId}
+        onChange={(e) => setUserId(e.target.value)}
+      >
+        <option value="">Select player</option>
+        {profiles.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.display_name || "Player"}
+          </option>
+        ))}
+      </select>
+
+      <select
+        style={styles.input}
+        value={resultType}
+        onChange={(e) => setResultType(e.target.value)}
+      >
+        <option value="race">Grand Prix</option>
+        <option value="sprint">Sprint</option>
+      </select>
+
+      {[1, 2, 3].map((n) => (
+        <select
+          key={n}
+          style={styles.input}
+          value={draft[`p${n}_driver_id`] || ""}
+          onChange={(e) =>
+            setDraft((prev) => ({
+              ...prev,
+              [`p${n}_driver_id`]: e.target.value
+            }))
+          }
+        >
+          <option value="">Pick P{n}</option>
+          {drivers.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name} · {d.team}
+            </option>
+          ))}
+        </select>
+      ))}
+
+      <input
+        style={styles.input}
+        type="number"
+        min="1"
+        max="22"
+        placeholder="Oscar finish"
+        value={draft.oscar_finish ?? ""}
+        onChange={(e) =>
+          setDraft((prev) => ({
+            ...prev,
+            oscar_finish: e.target.value
+          }))
+        }
+      />
+
+      <button style={styles.secondary} onClick={saveTipForUser} disabled={saving}>
+        {saving ? "Saving..." : "Save user tip"}
+      </button>
+    </div>
+  );
+}
+
 function Auth({ onReady }) {
   const [mode, setMode] = useState("signin");
   const [email, setEmail] = useState("");
@@ -701,12 +1024,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("tips");
   const [syncing, setSyncing] = useState(false);
 
-  useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  async function loadAll(userId) {
+  async function loadAll(userIdOverride) {
     const [
       { data: profilesData },
       { data: driversData },
@@ -727,6 +1045,7 @@ export default function App() {
     setTips(tipsData || []);
     setResults(resultsData || []);
 
+    const userId = userIdOverride || session?.user?.id;
     const myProfile = (profilesData || []).find((p) => p.id === userId) || null;
     setProfile(myProfile);
 
@@ -748,6 +1067,11 @@ export default function App() {
       setRaceDraft(myRaceTip || blankTip("race"));
     }
   }
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
@@ -1050,7 +1374,7 @@ export default function App() {
           ) : null}
         </div>
 
-        <div style={styles.tabRowFive}>
+        <div style={styles.tabRowSix}>
           <button
             type="button"
             style={activeTab === "tips" ? styles.activeTabButton : styles.tabButton}
@@ -1078,6 +1402,13 @@ export default function App() {
             onClick={() => setActiveTab("picks")}
           >
             Round Picks
+          </button>
+          <button
+            type="button"
+            style={activeTab === "profile" ? styles.activeTabButton : styles.tabButton}
+            onClick={() => setActiveTab("profile")}
+          >
+            Profile
           </button>
           {profile?.is_admin ? (
             <button
@@ -1187,8 +1518,30 @@ export default function App() {
           </div>
         ) : null}
 
+        {activeTab === "profile" ? (
+          <ProfilePanel
+            session={session}
+            profile={profile}
+            setMsg={setMsg}
+            reloadData={() => loadAll(session.user.id)}
+          />
+        ) : null}
+
         {activeTab === "admin" && profile?.is_admin ? (
           <div style={styles.stack}>
+            <AdminCreateUserPanel
+              setMsg={setMsg}
+              reloadData={() => loadAll(session.user.id)}
+            />
+
+            <AdminUserTipPanel
+              rounds={rounds}
+              profiles={profiles}
+              drivers={drivers}
+              setMsg={setMsg}
+              reloadData={() => loadAll(session.user.id)}
+            />
+
             {activeRound?.is_sprint ? (
               <ResultEntryForm
                 title="Admin: Sprint Result"
@@ -1317,9 +1670,9 @@ const styles = {
     gap: 8,
     marginBottom: 16
   },
-  tabRowFive: {
+  tabRowSix: {
     display: "grid",
-    gridTemplateColumns: "repeat(5, 1fr)",
+    gridTemplateColumns: "repeat(6, 1fr)",
     gap: 8,
     marginBottom: 16
   },
@@ -1436,7 +1789,8 @@ const styles = {
   inlineFlex: {
     display: "inline-flex",
     alignItems: "center",
-    gap: 8
+    gap: 8,
+    flexWrap: "wrap"
   },
   cardHeaderRow: {
     display: "flex",
@@ -1498,5 +1852,11 @@ const styles = {
     padding: "4px 8px",
     fontSize: 12,
     fontWeight: 700
+  },
+  checkboxRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 12
   }
 };
