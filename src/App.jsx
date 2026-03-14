@@ -400,6 +400,7 @@ function Auth({ onReady }) {
 export default function App() {
   const [session, setSession] = useState(null);
   const [profiles, setProfiles] = useState([]);
+  const [profile, setProfile] = useState(null);
   const [drivers, setDrivers] = useState([]);
   const [rounds, setRounds] = useState([]);
   const [tips, setTips] = useState([]);
@@ -410,6 +411,7 @@ export default function App() {
   const [msg, setMsg] = useState("");
   const [now, setNow] = useState(new Date());
   const [activeTab, setActiveTab] = useState("tips");
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
@@ -424,7 +426,7 @@ export default function App() {
       { data: tipsData },
       { data: resultsData }
     ] = await Promise.all([
-      supabase.from("profiles").select("id, display_name").order("display_name"),
+      supabase.from("profiles").select("id, display_name, is_admin").order("display_name"),
       supabase.from("drivers").select("*").order("name"),
       supabase.from("rounds").select("*").eq("season", 2026).order("round_number"),
       supabase.from("tips").select("*"),
@@ -436,6 +438,9 @@ export default function App() {
     setRounds(roundsData || []);
     setTips(tipsData || []);
     setResults(resultsData || []);
+
+    const myProfile = (profilesData || []).find((p) => p.id === userId) || null;
+    setProfile(myProfile);
 
     const firstOpen =
       (roundsData || []).find((r) => !getRoundStatus(r, new Date()).locked) ||
@@ -459,7 +464,6 @@ export default function App() {
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       setSession(data.session);
-
       if (data.session?.user) {
         await loadAll(data.session.user.id);
       }
@@ -469,9 +473,10 @@ export default function App() {
       data: { subscription }
     } = supabase.auth.onAuthStateChange(async (_event, sess) => {
       setSession(sess);
-
       if (sess?.user) {
         await loadAll(sess.user.id);
+      } else {
+        setProfile(null);
       }
     });
 
@@ -597,6 +602,54 @@ export default function App() {
     await loadAll(session.user.id);
   }
 
+  async function syncResultsNow() {
+    if (!profile?.is_admin) return;
+
+    try {
+      setSyncing(true);
+      setMsg("Syncing results...");
+
+      const {
+        data: { session: currentSession }
+      } = await supabase.auth.getSession();
+
+      const accessToken = currentSession?.access_token;
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sync-results`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: accessToken ? `Bearer ${accessToken}` : ""
+          },
+          body: JSON.stringify({})
+        }
+      );
+
+      const json = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        setMsg(json?.error || "Sync failed");
+        return;
+      }
+
+      setMsg(
+        json?.actions?.length
+          ? `Sync complete: ${json.actions.join(", ")}`
+          : "Sync complete"
+      );
+
+      if (session?.user?.id) {
+        await loadAll(session.user.id);
+      }
+    } catch (err) {
+      setMsg(err?.message || "Sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function signOut() {
     await supabase.auth.signOut();
     window.location.reload();
@@ -612,9 +665,16 @@ export default function App() {
             <h1 style={styles.pageTitle}>🏁 Olds F1 Tipping 2026</h1>
             <p style={styles.pageSub}>Sprint tips are half points. Grand Prix tips are full points.</p>
           </div>
-          <button onClick={signOut} style={styles.primary}>
-            Sign out
-          </button>
+          <div style={styles.headerActions}>
+            {profile?.is_admin ? (
+              <button onClick={syncResultsNow} style={styles.secondary} disabled={syncing}>
+                {syncing ? "Syncing..." : "Sync Results"}
+              </button>
+            ) : null}
+            <button onClick={signOut} style={styles.primary}>
+              Sign out
+            </button>
+          </div>
         </div>
 
         {msg ? <div style={styles.notice}>{msg}</div> : null}
@@ -817,6 +877,11 @@ const styles = {
     marginBottom: 16,
     flexWrap: "wrap"
   },
+  headerActions: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap"
+  },
   pageTitle: {
     margin: 0,
     fontSize: 28
@@ -862,6 +927,15 @@ const styles = {
     border: "none",
     background: "white",
     color: "black",
+    fontWeight: 700,
+    cursor: "pointer"
+  },
+  secondary: {
+    padding: "12px 16px",
+    borderRadius: 10,
+    border: "1px solid #4b5563",
+    background: "#11151c",
+    color: "white",
     fontWeight: 700,
     cursor: "pointer"
   },
