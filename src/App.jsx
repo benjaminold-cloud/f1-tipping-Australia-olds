@@ -630,11 +630,21 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
     if (!email || email.endsWith("@oldsf1.test")) {
       setEmail(generatedEmail);
     }
-  }, [displayName]);
+  }, [displayName]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function createUser() {
     try {
       setSaving(true);
+
+      await supabase.auth.refreshSession();
+      const {
+        data: { session }
+      } = await supabase.auth.getSession();
+
+      const accessToken = session?.access_token;
+      if (!accessToken) {
+        throw new Error("No active admin session. Please sign in again.");
+      }
 
       const { data, error } = await supabase.functions.invoke("admin-create-user", {
         body: {
@@ -642,6 +652,9 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
           email,
           password,
           is_admin: isAdmin
+        },
+        headers: {
+          Authorization: `Bearer ${accessToken}`
         }
       });
 
@@ -709,95 +722,17 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
   );
 }
 
-function AdminUserTipPanel({
-  rounds,
-  profiles,
+function AdminTipForm({
+  title,
+  draft,
+  setDraft,
   drivers,
-  setMsg,
-  reloadData
+  onSave,
+  saveLabel
 }) {
-  const [roundId, setRoundId] = useState("");
-  const [userId, setUserId] = useState("");
-  const [resultType, setResultType] = useState("race");
-  const [draft, setDraft] = useState(blankTip("race"));
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    setDraft(blankTip(resultType));
-  }, [resultType]);
-
-  async function saveTipForUser() {
-    try {
-      setSaving(true);
-
-      if (!roundId || !userId) {
-        throw new Error("Select a round and player");
-      }
-
-      const payload = {
-        round_id: Number(roundId),
-        user_id: userId,
-        result_type: resultType,
-        p1_driver_id: draft.p1_driver_id || null,
-        p2_driver_id: draft.p2_driver_id || null,
-        p3_driver_id: draft.p3_driver_id || null,
-        oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
-        updated_at: new Date().toISOString()
-      };
-
-      const { error } = await supabase
-        .from("tips")
-        .upsert(payload, { onConflict: "round_id,user_id,result_type" });
-
-      if (error) throw error;
-
-      setMsg("Admin tip saved");
-      await reloadData();
-    } catch (err) {
-      setMsg(err?.message || "Failed to save tip");
-    } finally {
-      setSaving(false);
-    }
-  }
-
   return (
     <div style={styles.adminCard}>
-      <h3 style={styles.sectionTitle}>Enter Picks For Any User</h3>
-
-      <select
-        style={styles.input}
-        value={roundId}
-        onChange={(e) => setRoundId(e.target.value)}
-      >
-        <option value="">Select round</option>
-        {rounds.map((r) => (
-          <option key={r.id} value={r.id}>
-            R{r.round_number} · {r.grand_prix} {r.is_sprint ? "· Sprint" : ""}
-          </option>
-        ))}
-      </select>
-
-      <select
-        style={styles.input}
-        value={userId}
-        onChange={(e) => setUserId(e.target.value)}
-      >
-        <option value="">Select player</option>
-        {profiles.map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.display_name || "Player"}
-          </option>
-        ))}
-      </select>
-
-      <select
-        style={styles.input}
-        value={resultType}
-        onChange={(e) => setResultType(e.target.value)}
-      >
-        <option value="race">Grand Prix</option>
-        <option value="sprint">Sprint</option>
-      </select>
+      <h3 style={styles.sectionTitle}>{title}</h3>
 
       {[1, 2, 3].map((n) => (
         <select
@@ -835,9 +770,153 @@ function AdminUserTipPanel({
         }
       />
 
-      <button style={styles.adminButton} onClick={saveTipForUser} disabled={saving}>
-        {saving ? "Saving..." : "Save user tip"}
+      <button style={styles.adminButton} onClick={onSave}>
+        {saveLabel}
       </button>
+    </div>
+  );
+}
+
+function AdminUserTipPanel({
+  rounds,
+  profiles,
+  drivers,
+  tips,
+  setMsg,
+  reloadData
+}) {
+  const [roundId, setRoundId] = useState("");
+  const [userId, setUserId] = useState("");
+  const [sprintDraft, setSprintDraft] = useState(blankTip("sprint"));
+  const [raceDraft, setRaceDraft] = useState(blankTip("race"));
+  const [savingSprint, setSavingSprint] = useState(false);
+  const [savingRace, setSavingRace] = useState(false);
+
+  const selectedRound = useMemo(
+    () => rounds.find((r) => String(r.id) === String(roundId)) || null,
+    [rounds, roundId]
+  );
+
+  useEffect(() => {
+    if (!roundId || !userId) {
+      setSprintDraft(blankTip("sprint"));
+      setRaceDraft(blankTip("race"));
+      return;
+    }
+
+    const existingSprint =
+      tips.find(
+        (t) =>
+          String(t.round_id) === String(roundId) &&
+          t.user_id === userId &&
+          t.result_type === "sprint"
+      ) || blankTip("sprint");
+
+    const existingRace =
+      tips.find(
+        (t) =>
+          String(t.round_id) === String(roundId) &&
+          t.user_id === userId &&
+          t.result_type === "race"
+      ) || blankTip("race");
+
+    setSprintDraft(existingSprint);
+    setRaceDraft(existingRace);
+  }, [roundId, userId, tips]);
+
+  async function saveTipForUser(resultType, draft, setSaving) {
+    try {
+      setSaving(true);
+
+      if (!roundId || !userId) {
+        throw new Error("Select a round and player");
+      }
+
+      const payload = {
+        round_id: Number(roundId),
+        user_id: userId,
+        result_type: resultType,
+        p1_driver_id: draft.p1_driver_id || null,
+        p2_driver_id: draft.p2_driver_id || null,
+        p3_driver_id: draft.p3_driver_id || null,
+        oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
+        updated_at: new Date().toISOString()
+      };
+
+      const { error } = await supabase
+        .from("tips")
+        .upsert(payload, { onConflict: "round_id,user_id,result_type" });
+
+      if (error) throw error;
+
+      setMsg(
+        `${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved for ${
+          profiles.find((p) => p.id === userId)?.display_name || "player"
+        }`
+      );
+      await reloadData();
+    } catch (err) {
+      setMsg(err?.message || "Failed to save tip");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={styles.adminSectionWrap}>
+      <div style={styles.adminCard}>
+        <h3 style={styles.sectionTitle}>Enter Picks For Any User</h3>
+
+        <select
+          style={styles.input}
+          value={roundId}
+          onChange={(e) => setRoundId(e.target.value)}
+        >
+          <option value="">Select round</option>
+          {rounds.map((r) => (
+            <option key={r.id} value={r.id}>
+              R{r.round_number} · {r.grand_prix} {r.is_sprint ? "· Sprint" : ""}
+            </option>
+          ))}
+        </select>
+
+        <select
+          style={styles.input}
+          value={userId}
+          onChange={(e) => setUserId(e.target.value)}
+        >
+          <option value="">Select player</option>
+          {profiles.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.display_name || "Player"}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {roundId && userId ? (
+        <>
+          {selectedRound?.is_sprint ? (
+            <AdminTipForm
+              title="Sprint Picks"
+              draft={sprintDraft}
+              setDraft={setSprintDraft}
+              drivers={drivers}
+              onSave={() => saveTipForUser("sprint", sprintDraft, setSavingSprint)}
+              saveLabel={savingSprint ? "Saving..." : "Save sprint picks"}
+            />
+          ) : null}
+
+          <AdminTipForm
+            title="Grand Prix Picks"
+            draft={raceDraft}
+            setDraft={setRaceDraft}
+            drivers={drivers}
+            onSave={() => saveTipForUser("race", raceDraft, setSavingRace)}
+            saveLabel={savingRace ? "Saving..." : "Save grand prix picks"}
+          />
+        </>
+      ) : null}
     </div>
   );
 }
@@ -1373,7 +1452,7 @@ export default function App() {
           ) : null}
         </div>
 
-        <div style={styles.tabRowSix}>
+        <div style={styles.tabWrap}>
           <button
             type="button"
             style={activeTab === "tips" ? styles.activeTabButton : styles.tabButton}
@@ -1535,40 +1614,43 @@ export default function App() {
               </div>
             </div>
 
-            <AdminCreateUserPanel
-              setMsg={setMsg}
-              reloadData={() => loadAll(session.user.id)}
-            />
+            <div style={styles.adminPanelWrap}>
+              <AdminCreateUserPanel
+                setMsg={setMsg}
+                reloadData={() => loadAll(session.user.id)}
+              />
 
-            <AdminUserTipPanel
-              rounds={rounds}
-              profiles={profiles}
-              drivers={drivers}
-              setMsg={setMsg}
-              reloadData={() => loadAll(session.user.id)}
-            />
-
-            {activeRound?.is_sprint ? (
-              <ResultEntryForm
-                title="Manual Sprint Result"
-                draft={sprintResultDraft}
-                setDraft={setSprintResultDraft}
+              <AdminUserTipPanel
+                rounds={rounds}
+                profiles={profiles}
                 drivers={drivers}
-                onSave={() => saveResult("sprint", sprintResultDraft)}
-                saveLabel="Save sprint result"
+                tips={tips}
+                setMsg={setMsg}
+                reloadData={() => loadAll(session.user.id)}
+              />
+
+              {activeRound?.is_sprint ? (
+                <ResultEntryForm
+                  title="Manual Sprint Result"
+                  draft={sprintResultDraft}
+                  setDraft={setSprintResultDraft}
+                  drivers={drivers}
+                  onSave={() => saveResult("sprint", sprintResultDraft)}
+                  saveLabel="Save sprint result"
+                  adminMode={true}
+                />
+              ) : null}
+
+              <ResultEntryForm
+                title="Manual Grand Prix Result"
+                draft={raceResultDraft}
+                setDraft={setRaceResultDraft}
+                drivers={drivers}
+                onSave={() => saveResult("race", raceResultDraft)}
+                saveLabel="Save grand prix result"
                 adminMode={true}
               />
-            ) : null}
-
-            <ResultEntryForm
-              title="Manual Grand Prix Result"
-              draft={raceResultDraft}
-              setDraft={setRaceResultDraft}
-              drivers={drivers}
-              onSave={() => saveResult("race", raceResultDraft)}
-              saveLabel="Save grand prix result"
-              adminMode={true}
-            />
+            </div>
           </div>
         ) : null}
       </div>
@@ -1659,6 +1741,10 @@ const styles = {
     color: "#f3f4f6",
     fontSize: 14
   },
+  adminPanelWrap: {
+    display: "grid",
+    gap: 16
+  },
   sectionTitle: {
     marginTop: 0,
     marginBottom: 12
@@ -1715,47 +1801,51 @@ const styles = {
     gap: 8,
     marginBottom: 16
   },
-  tabRowSix: {
-    display: "grid",
-    gridTemplateColumns: "repeat(6, 1fr)",
+  tabWrap: {
+    display: "flex",
+    flexWrap: "wrap",
     gap: 8,
     marginBottom: 16
   },
   tabButton: {
-    padding: 12,
+    padding: "12px 16px",
     borderRadius: 10,
     border: "1px solid #333",
     background: "#11151c",
     color: "white",
     cursor: "pointer",
-    fontWeight: 600
+    fontWeight: 600,
+    minWidth: 110
   },
   activeTabButton: {
-    padding: 12,
+    padding: "12px 16px",
     borderRadius: 10,
     border: "1px solid #555",
     background: "white",
     color: "black",
     cursor: "pointer",
-    fontWeight: 700
+    fontWeight: 700,
+    minWidth: 110
   },
   adminTabButton: {
-    padding: 12,
+    padding: "12px 16px",
     borderRadius: 10,
     border: "1px solid rgba(245,158,11,0.35)",
     background: "rgba(245,158,11,0.12)",
     color: "#fcd34d",
     cursor: "pointer",
-    fontWeight: 700
+    fontWeight: 700,
+    minWidth: 110
   },
   adminTabActive: {
-    padding: 12,
+    padding: "12px 16px",
     borderRadius: 10,
     border: "1px solid rgba(245,158,11,0.45)",
     background: "#f59e0b",
     color: "#111827",
     cursor: "pointer",
-    fontWeight: 800
+    fontWeight: 800,
+    minWidth: 110
   },
   notice: {
     background: "#171a21",
@@ -1921,5 +2011,9 @@ const styles = {
     alignItems: "center",
     gap: 8,
     marginBottom: 12
+  },
+  adminSectionWrap: {
+    display: "grid",
+    gap: 16
   }
 };
