@@ -151,6 +151,16 @@ function scoreTip(tip, result, isSprint) {
     points += exactOrder ? 3 : 1;
   }
 
+  if (
+    tip.oscar_finish !== null &&
+    tip.oscar_finish !== "" &&
+    result.oscar_finish !== null &&
+    result.oscar_finish !== "" &&
+    Number(tip.oscar_finish) === Number(result.oscar_finish)
+  ) {
+    points += 2;
+  }
+
   return isSprint ? points / 2 : points;
 }
 
@@ -160,6 +170,8 @@ function scoreBreakdown(tip, result, isSprint) {
       pickScores: [0, 0, 0],
       pickStates: ["pending", "pending", "pending"],
       bonus: 0,
+      oscarPoints: 0,
+      oscarState: "pending",
       total: 0
     };
   }
@@ -191,16 +203,38 @@ function scoreBreakdown(tip, result, isSprint) {
     picks.every((driverId, idx) => driverId === actual[idx]);
 
   const rawBonus = pickedAllTop3 ? (exactOrder ? 3 : 1) : 0;
+
+  let rawOscarPoints = 0;
+  let oscarState = "miss";
+
+  if (
+    tip.oscar_finish !== null &&
+    tip.oscar_finish !== "" &&
+    result.oscar_finish !== null &&
+    result.oscar_finish !== ""
+  ) {
+    if (Number(tip.oscar_finish) === Number(result.oscar_finish)) {
+      rawOscarPoints = 2;
+      oscarState = "exact";
+    }
+  } else {
+    oscarState = "pending";
+  }
+
   const multiplier = isSprint ? 0.5 : 1;
 
   const pickScores = rawPickScores.map((p) => p * multiplier);
   const bonus = rawBonus * multiplier;
-  const total = pickScores.reduce((sum, p) => sum + p, 0) + bonus;
+  const oscarPoints = rawOscarPoints * multiplier;
+  const total =
+    pickScores.reduce((sum, p) => sum + p, 0) + bonus + oscarPoints;
 
   return {
     pickScores,
     pickStates,
     bonus,
+    oscarPoints,
+    oscarState,
     total
   };
 }
@@ -507,8 +541,16 @@ function TipsCard({ title, tips, profilesById, driverMap, result, isSprint }) {
               ) : null}
             </div>
 
-            <div style={styles.tipLine}>
-              <span style={styles.tipKey}>Oscar:</span> {tip.oscar_finish ?? "-"}
+            <div style={styles.tipLineRow}>
+              <div style={styles.tipLine}>
+                <span style={styles.tipKey}>Oscar:</span> {tip.oscar_finish ?? "-"}
+              </div>
+              {result ? (
+                <PickScoreTag
+                  state={breakdown.oscarState}
+                  points={breakdown.oscarPoints}
+                />
+              ) : null}
             </div>
 
             {result && breakdown.bonus > 0 ? (
@@ -525,6 +567,7 @@ function ProfilePanel({ session, profile, setMsg, reloadData }) {
   const [displayName, setDisplayName] = useState(profile?.display_name || "");
   const [email, setEmail] = useState(session?.user?.email || "");
   const [password, setPassword] = useState("");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setDisplayName(profile?.display_name || "");
@@ -536,28 +579,51 @@ function ProfilePanel({ session, profile, setMsg, reloadData }) {
 
   async function saveProfile() {
     try {
+      setSaving(true);
+
       const updates = [];
       let authChanged = false;
 
       if (displayName !== (profile?.display_name || "")) {
-        const { error } = await supabase
+        const profilePromise = supabase
           .from("profiles")
           .update({ display_name: displayName })
           .eq("id", session.user.id);
+
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Profile update timed out. Please try again.")), 15000)
+        );
+
+        const profileResult = await Promise.race([profilePromise, timeoutPromise]);
+        const { error } = profileResult;
 
         if (error) throw error;
         updates.push("name");
       }
 
       if (email && email !== (session?.user?.email || "")) {
-        const { error } = await supabase.auth.updateUser({ email });
+        const emailPromise = supabase.auth.updateUser({ email });
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Email update timed out. Please try again.")), 15000)
+        );
+
+        const emailResult = await Promise.race([emailPromise, timeoutPromise]);
+        const { error } = emailResult;
+
         if (error) throw error;
         updates.push("email");
         authChanged = true;
       }
 
       if (password) {
-        const { error } = await supabase.auth.updateUser({ password });
+        const passwordPromise = supabase.auth.updateUser({ password });
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Password update timed out. Please try again.")), 15000)
+        );
+
+        const passwordResult = await Promise.race([passwordPromise, timeoutPromise]);
+        const { error } = passwordResult;
+
         if (error) throw error;
         updates.push("password");
         authChanged = true;
@@ -577,6 +643,8 @@ function ProfilePanel({ session, profile, setMsg, reloadData }) {
       }
     } catch (err) {
       setMsg(err?.message || "Failed to update profile");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -607,8 +675,8 @@ function ProfilePanel({ session, profile, setMsg, reloadData }) {
         onChange={(e) => setPassword(e.target.value)}
       />
 
-      <button style={styles.primary} onClick={saveProfile}>
-        Save profile
+      <button style={styles.primary} onClick={saveProfile} disabled={saving}>
+        {saving ? "Saving..." : "Save profile"}
       </button>
     </div>
   );
@@ -645,27 +713,36 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
         throw new Error("No active admin session. Please sign in again.");
       }
 
-      const invokePromise = supabase.functions.invoke("admin-create-user", {
-        body: {
-          display_name: displayName,
-          email,
-          password,
-          is_admin: isAdmin
-        },
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
-      });
+      const controller = new AbortController();
 
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Create user timed out. Please try again.")), 15000)
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, 15000);
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-create-user`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`
+          },
+          body: JSON.stringify({
+            display_name: displayName,
+            email,
+            password,
+            is_admin: isAdmin
+          }),
+          signal: controller.signal
+        }
       );
 
-      const result = await Promise.race([invokePromise, timeoutPromise]);
-      const { data, error } = result;
+      clearTimeout(timeoutId);
 
-      if (error) {
-        throw new Error(error.message || "Failed to create user");
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Failed to create user");
       }
 
       if (!data?.ok) {
@@ -679,7 +756,11 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
       setIsAdmin(false);
       await reloadData();
     } catch (err) {
-      setMsg(err?.message || "Failed to create user");
+      if (err?.name === "AbortError") {
+        setMsg("Create user timed out. Please try again.");
+      } else {
+        setMsg(err?.message || "Failed to create user");
+      }
     } finally {
       setSaving(false);
     }
@@ -850,9 +931,16 @@ function AdminUserTipPanel({
         updated_at: new Date().toISOString()
       };
 
-      const { error } = await supabase
+      const savePromise = supabase
         .from("tips")
         .upsert(payload, { onConflict: "round_id,user_id,result_type" });
+
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Save tip timed out. Please try again.")), 15000)
+      );
+
+      const saveResult = await Promise.race([savePromise, timeoutPromise]);
+      const { error } = saveResult;
 
       if (error) throw error;
 
@@ -1300,56 +1388,76 @@ export default function App() {
   async function saveTip(resultType, draft) {
     if (!session?.user || !activeRound) return;
 
-    const payload = {
-      round_id: activeRound.id,
-      user_id: session.user.id,
-      result_type: resultType,
-      p1_driver_id: draft.p1_driver_id || null,
-      p2_driver_id: draft.p2_driver_id || null,
-      p3_driver_id: draft.p3_driver_id || null,
-      oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
-      updated_at: new Date().toISOString()
-    };
+    try {
+      const payload = {
+        round_id: activeRound.id,
+        user_id: session.user.id,
+        result_type: resultType,
+        p1_driver_id: draft.p1_driver_id || null,
+        p2_driver_id: draft.p2_driver_id || null,
+        p3_driver_id: draft.p3_driver_id || null,
+        oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
+        updated_at: new Date().toISOString()
+      };
 
-    const { error } = await supabase
-      .from("tips")
-      .upsert(payload, { onConflict: "round_id,user_id,result_type" });
+      const savePromise = supabase
+        .from("tips")
+        .upsert(payload, { onConflict: "round_id,user_id,result_type" });
 
-    if (error) {
-      setMsg(error.message);
-      return;
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Save tip timed out. Please try again.")), 15000)
+      );
+
+      const saveResult = await Promise.race([savePromise, timeoutPromise]);
+      const { error } = saveResult;
+
+      if (error) {
+        throw error;
+      }
+
+      setMsg(`${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved`);
+      await loadAll(session.user.id);
+    } catch (err) {
+      setMsg(err?.message || "Failed to save tip");
     }
-
-    setMsg(`${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved`);
-    await loadAll(session.user.id);
   }
 
   async function saveResult(resultType, draft) {
     if (!profile?.is_admin || !activeRound) return;
 
-    const payload = {
-      round_id: activeRound.id,
-      result_type: resultType,
-      p1_driver_id: draft.p1_driver_id || null,
-      p2_driver_id: draft.p2_driver_id || null,
-      p3_driver_id: draft.p3_driver_id || null,
-      oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
-      source: "manual"
-    };
+    try {
+      const payload = {
+        round_id: activeRound.id,
+        result_type: resultType,
+        p1_driver_id: draft.p1_driver_id || null,
+        p2_driver_id: draft.p2_driver_id || null,
+        p3_driver_id: draft.p3_driver_id || null,
+        oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
+        source: "manual"
+      };
 
-    const { error } = await supabase
-      .from("results")
-      .upsert(payload, { onConflict: "round_id,result_type" });
+      const savePromise = supabase
+        .from("results")
+        .upsert(payload, { onConflict: "round_id,result_type" });
 
-    if (error) {
-      setMsg(error.message);
-      return;
-    }
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Save result timed out. Please try again.")), 15000)
+      );
 
-    setMsg(`${resultType === "sprint" ? "Sprint" : "Grand Prix"} result saved`);
+      const saveResultResponse = await Promise.race([savePromise, timeoutPromise]);
+      const { error } = saveResultResponse;
 
-    if (session?.user?.id) {
-      await loadAll(session.user.id);
+      if (error) {
+        throw error;
+      }
+
+      setMsg(`${resultType === "sprint" ? "Sprint" : "Grand Prix"} result saved`);
+
+      if (session?.user?.id) {
+        await loadAll(session.user.id);
+      }
+    } catch (err) {
+      setMsg(err?.message || "Failed to save result");
     }
   }
 
@@ -1360,9 +1468,16 @@ export default function App() {
       setSyncing(true);
       setMsg("Syncing results...");
 
-      const { data, error } = await supabase.functions.invoke("sync-results", {
+      const syncPromise = supabase.functions.invoke("sync-results", {
         body: {}
       });
+
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Sync timed out. Please try again.")), 20000)
+      );
+
+      const syncResponse = await Promise.race([syncPromise, timeoutPromise]);
+      const { data, error } = syncResponse;
 
       if (error) {
         throw new Error(error.message || "Sync failed");
@@ -1385,8 +1500,28 @@ export default function App() {
   }
 
   async function signOut() {
-    await supabase.auth.signOut();
-    window.location.reload();
+    try {
+      const signOutPromise = supabase.auth.signOut();
+
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Sign out timed out. Please close and reopen the app.")), 10000)
+      );
+
+      await Promise.race([signOutPromise, timeoutPromise]);
+
+      setSession(null);
+      setProfile(null);
+      setProfiles([]);
+      setDrivers([]);
+      setRounds([]);
+      setTips([]);
+      setResults([]);
+      setActiveRoundId(null);
+      setMsg("");
+      setActiveTab("tips");
+    } catch (err) {
+      setMsg(err?.message || "Sign out failed");
+    }
   }
 
   if (!session) return <Auth onReady={() => window.location.reload()} />;
