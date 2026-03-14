@@ -624,33 +624,20 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
     try {
       setSaving(true);
 
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData?.session?.access_token;
+      const { data, error } = await supabase.functions.invoke("admin-create-user", {
+        body: {
+          display_name: displayName,
+          email,
+          password,
+          is_admin: isAdmin
+        }
+      });
 
-      if (!accessToken) {
-        throw new Error("No active session");
+      if (error) {
+        throw new Error(error.message || "Failed to create user");
       }
 
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-create-user`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`
-          },
-          body: JSON.stringify({
-            display_name: displayName,
-            email,
-            password,
-            is_admin: isAdmin
-          })
-        }
-      );
-
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok || !data?.ok) {
+      if (!data?.ok) {
         throw new Error(data?.error || "Failed to create user");
       }
 
@@ -680,7 +667,7 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
 
       <input
         style={styles.input}
-        placeholder="Email (e.g. chris.smith@oldsf1.local)"
+        placeholder="Email (e.g. john.collett@oldsf1.test)"
         type="email"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
