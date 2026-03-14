@@ -23,6 +23,10 @@ const TEAM_META = {
     color: "#1e41ff",
     logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/red-bull-racing-logo.png"
   },
+  "Red Bull Racing": {
+    color: "#1e41ff",
+    logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/red-bull-racing-logo.png"
+  },
   "Aston Martin": {
     color: "#006f62",
     logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/aston-martin-logo.png"
@@ -40,6 +44,10 @@ const TEAM_META = {
     logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/haas-f1-team-logo.png"
   },
   RB: {
+    color: "#6692ff",
+    logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/rb-logo.png"
+  },
+  "Racing Bulls": {
     color: "#6692ff",
     logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/rb-logo.png"
   },
@@ -146,6 +154,53 @@ function scoreTip(tip, result, isSprint) {
   return isSprint ? points / 2 : points;
 }
 
+function scoreBreakdown(tip, result, isSprint) {
+  if (!tip || !result) {
+    return {
+      pickScores: [0, 0, 0],
+      pickStates: ["pending", "pending", "pending"],
+      bonus: 0,
+      total: 0
+    };
+  }
+
+  const picks = [tip.p1_driver_id, tip.p2_driver_id, tip.p3_driver_id];
+  const actual = [result.p1_driver_id, result.p2_driver_id, result.p3_driver_id];
+
+  const pickScores = [0, 0, 0];
+  const pickStates = ["miss", "miss", "miss"];
+
+  for (let i = 0; i < 3; i += 1) {
+    if (!picks[i] || !actual[i]) continue;
+
+    if (picks[i] === actual[i]) {
+      pickScores[i] = 2;
+      pickStates[i] = "exact";
+    } else if (actual.includes(picks[i])) {
+      pickScores[i] = 1;
+      pickStates[i] = "partial";
+    }
+  }
+
+  const pickedAllTop3 =
+    actual.length === 3 &&
+    actual.every((driverId) => picks.includes(driverId));
+
+  const exactOrder =
+    picks.length === 3 &&
+    picks.every((driverId, idx) => driverId === actual[idx]);
+
+  const bonus = pickedAllTop3 ? (exactOrder ? 3 : 1) : 0;
+  const total = pickScores.reduce((sum, p) => sum + p, 0) + bonus;
+
+  return {
+    pickScores,
+    pickStates,
+    bonus,
+    total: isSprint ? total / 2 : total
+  };
+}
+
 function blankTip(resultType) {
   return {
     result_type: resultType,
@@ -217,6 +272,25 @@ function ResultBadge({ result }) {
       : styles.badgePending;
 
   return <span style={style}>{status.label}</span>;
+}
+
+function PickScoreTag({ state, points }) {
+  if (state === "pending") return null;
+
+  const style =
+    state === "exact"
+      ? styles.pickExact
+      : state === "partial"
+      ? styles.pickPartial
+      : styles.pickMiss;
+
+  const icon = state === "exact" ? "✓" : state === "partial" ? "•" : "✕";
+
+  return (
+    <span style={style}>
+      {icon} +{points}
+    </span>
+  );
 }
 
 function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel }) {
@@ -364,7 +438,7 @@ function ResultCard({ title, result, driverMap }) {
   );
 }
 
-function TipsCard({ title, tips, profilesById, driverMap }) {
+function TipsCard({ title, tips, profilesById, driverMap, result, isSprint }) {
   if (!tips.length) {
     return (
       <div style={styles.subCard}>
@@ -377,26 +451,66 @@ function TipsCard({ title, tips, profilesById, driverMap }) {
   return (
     <div style={styles.subCard}>
       <h3 style={styles.sectionTitle}>{title}</h3>
-      {tips.map((tip) => (
-        <div key={`${tip.user_id}-${tip.result_type}`} style={styles.tipEntry}>
-          <div style={styles.tipName}>{profilesById.get(tip.user_id) || "Player"}</div>
-          <div style={styles.tipLine}>
-            <span style={styles.tipKey}>P1:</span>{" "}
-            <DriverLabel driverId={tip.p1_driver_id} driverMap={driverMap} size={16} />
+
+      {tips.map((tip) => {
+        const breakdown = scoreBreakdown(tip, result, isSprint);
+
+        return (
+          <div key={`${tip.user_id}-${tip.result_type}`} style={styles.tipEntry}>
+            <div style={styles.tipHeaderRow}>
+              <div style={styles.tipName}>{profilesById.get(tip.user_id) || "Player"}</div>
+              {result ? <div style={styles.tipTotal}>Total: {breakdown.total}</div> : null}
+            </div>
+
+            <div style={styles.tipLineRow}>
+              <div style={styles.tipLine}>
+                <span style={styles.tipKey}>P1:</span>{" "}
+                <DriverLabel driverId={tip.p1_driver_id} driverMap={driverMap} size={16} />
+              </div>
+              {result ? (
+                <PickScoreTag
+                  state={breakdown.pickStates[0]}
+                  points={breakdown.pickScores[0]}
+                />
+              ) : null}
+            </div>
+
+            <div style={styles.tipLineRow}>
+              <div style={styles.tipLine}>
+                <span style={styles.tipKey}>P2:</span>{" "}
+                <DriverLabel driverId={tip.p2_driver_id} driverMap={driverMap} size={16} />
+              </div>
+              {result ? (
+                <PickScoreTag
+                  state={breakdown.pickStates[1]}
+                  points={breakdown.pickScores[1]}
+                />
+              ) : null}
+            </div>
+
+            <div style={styles.tipLineRow}>
+              <div style={styles.tipLine}>
+                <span style={styles.tipKey}>P3:</span>{" "}
+                <DriverLabel driverId={tip.p3_driver_id} driverMap={driverMap} size={16} />
+              </div>
+              {result ? (
+                <PickScoreTag
+                  state={breakdown.pickStates[2]}
+                  points={breakdown.pickScores[2]}
+                />
+              ) : null}
+            </div>
+
+            <div style={styles.tipLine}>
+              <span style={styles.tipKey}>Oscar:</span> {tip.oscar_finish ?? "-"}
+            </div>
+
+            {result && breakdown.bonus > 0 ? (
+              <div style={styles.bonusLine}>Bonus: +{isSprint ? breakdown.bonus / 2 : breakdown.bonus}</div>
+            ) : null}
           </div>
-          <div style={styles.tipLine}>
-            <span style={styles.tipKey}>P2:</span>{" "}
-            <DriverLabel driverId={tip.p2_driver_id} driverMap={driverMap} size={16} />
-          </div>
-          <div style={styles.tipLine}>
-            <span style={styles.tipKey}>P3:</span>{" "}
-            <DriverLabel driverId={tip.p3_driver_id} driverMap={driverMap} size={16} />
-          </div>
-          <div style={styles.tipLine}>
-            <span style={styles.tipKey}>Oscar:</span> {tip.oscar_finish ?? "-"}
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -1052,6 +1166,8 @@ export default function App() {
                 tips={selectedSprintTips}
                 profilesById={profilesById}
                 driverMap={driverMap}
+                result={selectedSprintResult}
+                isSprint={true}
               />
             ) : null}
 
@@ -1060,6 +1176,8 @@ export default function App() {
               tips={selectedRaceTips}
               profilesById={profilesById}
               driverMap={driverMap}
+              result={selectedRaceResult}
+              isSprint={false}
             />
           </div>
         ) : null}
@@ -1266,12 +1384,31 @@ const styles = {
     color: "#9ca3af"
   },
   tipEntry: {
-    padding: "10px 0",
+    padding: "12px 0",
     borderBottom: "1px solid #232833"
   },
+  tipHeaderRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 8,
+    flexWrap: "wrap"
+  },
   tipName: {
+    fontWeight: 700
+  },
+  tipTotal: {
     fontWeight: 700,
-    marginBottom: 6
+    color: "#f3f4f6"
+  },
+  tipLineRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 6,
+    flexWrap: "wrap"
   },
   tipLine: {
     color: "#d1d5db",
@@ -1280,6 +1417,12 @@ const styles = {
   },
   tipKey: {
     color: "#9ca3af"
+  },
+  bonusLine: {
+    marginTop: 6,
+    fontSize: 13,
+    color: "#fcd34d",
+    fontWeight: 700
   },
   mutedText: {
     color: "#9ca3af",
@@ -1321,6 +1464,33 @@ const styles = {
     border: "1px solid rgba(148,163,184,0.3)",
     borderRadius: 999,
     padding: "4px 10px",
+    fontSize: 12,
+    fontWeight: 700
+  },
+  pickExact: {
+    background: "rgba(34,197,94,0.15)",
+    color: "#86efac",
+    border: "1px solid rgba(34,197,94,0.35)",
+    borderRadius: 999,
+    padding: "4px 8px",
+    fontSize: 12,
+    fontWeight: 700
+  },
+  pickPartial: {
+    background: "rgba(250,204,21,0.15)",
+    color: "#fde047",
+    border: "1px solid rgba(250,204,21,0.35)",
+    borderRadius: 999,
+    padding: "4px 8px",
+    fontSize: 12,
+    fontWeight: 700
+  },
+  pickMiss: {
+    background: "rgba(239,68,68,0.15)",
+    color: "#fca5a5",
+    border: "1px solid rgba(239,68,68,0.35)",
+    borderRadius: 999,
+    padding: "4px 8px",
     fontSize: 12,
     fontWeight: 700
   }
