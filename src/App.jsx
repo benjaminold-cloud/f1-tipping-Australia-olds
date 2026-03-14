@@ -119,6 +119,16 @@ function blankTip(resultType) {
   };
 }
 
+function blankResult(resultType) {
+  return {
+    result_type: resultType,
+    p1_driver_id: "",
+    p2_driver_id: "",
+    p3_driver_id: "",
+    oscar_finish: ""
+  };
+}
+
 function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel }) {
   return (
     <div style={styles.subCard}>
@@ -164,6 +174,61 @@ function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel 
 
       <button style={styles.primary} onClick={onSave} disabled={disabled}>
         {disabled ? "Locked" : saveLabel}
+      </button>
+    </div>
+  );
+}
+
+function ResultEntryForm({
+  title,
+  draft,
+  setDraft,
+  drivers,
+  onSave,
+  saveLabel
+}) {
+  return (
+    <div style={styles.subCard}>
+      <h3 style={styles.sectionTitle}>{title}</h3>
+
+      {[1, 2, 3].map((n) => (
+        <select
+          key={n}
+          style={styles.input}
+          value={draft[`p${n}_driver_id`] || ""}
+          onChange={(e) =>
+            setDraft((prev) => ({
+              ...prev,
+              [`p${n}_driver_id`]: e.target.value
+            }))
+          }
+        >
+          <option value="">Set P{n}</option>
+          {drivers.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name} · {d.team}
+            </option>
+          ))}
+        </select>
+      ))}
+
+      <input
+        style={styles.input}
+        type="number"
+        min="1"
+        max="22"
+        placeholder="Oscar finish"
+        value={draft.oscar_finish ?? ""}
+        onChange={(e) =>
+          setDraft((prev) => ({
+            ...prev,
+            oscar_finish: e.target.value
+          }))
+        }
+      />
+
+      <button style={styles.secondary} onClick={onSave}>
+        {saveLabel}
       </button>
     </div>
   );
@@ -408,6 +473,8 @@ export default function App() {
   const [activeRoundId, setActiveRoundId] = useState(null);
   const [sprintDraft, setSprintDraft] = useState(blankTip("sprint"));
   const [raceDraft, setRaceDraft] = useState(blankTip("race"));
+  const [sprintResultDraft, setSprintResultDraft] = useState(blankResult("sprint"));
+  const [raceResultDraft, setRaceResultDraft] = useState(blankResult("race"));
   const [msg, setMsg] = useState("");
   const [now, setNow] = useState(new Date());
   const [activeTab, setActiveTab] = useState("tips");
@@ -504,9 +571,18 @@ export default function App() {
         t.result_type === "race"
     );
 
+    const sprintResult = results.find(
+      (r) => r.round_id === activeRound.id && r.result_type === "sprint"
+    );
+    const raceResult = results.find(
+      (r) => r.round_id === activeRound.id && r.result_type === "race"
+    );
+
     setSprintDraft(mySprintTip || blankTip("sprint"));
     setRaceDraft(myRaceTip || blankTip("race"));
-  }, [activeRound, tips, session]);
+    setSprintResultDraft(sprintResult || blankResult("sprint"));
+    setRaceResultDraft(raceResult || blankResult("race"));
+  }, [activeRound, tips, results, session]);
 
   const roundStatus = useMemo(
     () => getRoundStatus(activeRound, now),
@@ -600,6 +676,35 @@ export default function App() {
 
     setMsg(`${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved`);
     await loadAll(session.user.id);
+  }
+
+  async function saveResult(resultType, draft) {
+    if (!profile?.is_admin || !activeRound) return;
+
+    const payload = {
+      round_id: activeRound.id,
+      result_type: resultType,
+      p1_driver_id: draft.p1_driver_id || null,
+      p2_driver_id: draft.p2_driver_id || null,
+      p3_driver_id: draft.p3_driver_id || null,
+      oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
+      source: "manual"
+    };
+
+    const { error } = await supabase
+      .from("results")
+      .upsert(payload, { onConflict: "round_id,result_type" });
+
+    if (error) {
+      setMsg(error.message);
+      return;
+    }
+
+    setMsg(`${resultType === "sprint" ? "Sprint" : "Grand Prix"} result saved`);
+
+    if (session?.user?.id) {
+      await loadAll(session.user.id);
+    }
   }
 
   async function syncResultsNow() {
@@ -720,7 +825,7 @@ export default function App() {
           ) : null}
         </div>
 
-        <div style={styles.tabRow}>
+        <div style={styles.tabRowFive}>
           <button
             type="button"
             style={activeTab === "tips" ? styles.activeTabButton : styles.tabButton}
@@ -749,6 +854,15 @@ export default function App() {
           >
             Round Picks
           </button>
+          {profile?.is_admin ? (
+            <button
+              type="button"
+              style={activeTab === "admin" ? styles.activeTabButton : styles.tabButton}
+              onClick={() => setActiveTab("admin")}
+            >
+              Admin
+            </button>
+          ) : null}
         </div>
 
         {activeTab === "tips" ? (
@@ -829,6 +943,30 @@ export default function App() {
               tips={selectedRaceTips}
               profilesById={profilesById}
               driverNameById={driverNameById}
+            />
+          </div>
+        ) : null}
+
+        {activeTab === "admin" && profile?.is_admin ? (
+          <div style={styles.stack}>
+            {activeRound?.is_sprint ? (
+              <ResultEntryForm
+                title="Admin: Sprint Result"
+                draft={sprintResultDraft}
+                setDraft={setSprintResultDraft}
+                drivers={drivers}
+                onSave={() => saveResult("sprint", sprintResultDraft)}
+                saveLabel="Save sprint result"
+              />
+            ) : null}
+
+            <ResultEntryForm
+              title="Admin: Grand Prix Result"
+              draft={raceResultDraft}
+              setDraft={setRaceResultDraft}
+              drivers={drivers}
+              onSave={() => saveResult("race", raceResultDraft)}
+              saveLabel="Save grand prix result"
             />
           </div>
         ) : null}
@@ -932,15 +1070,15 @@ const styles = {
     padding: 0,
     fontSize: 14
   },
-  tabRow: {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
-    gap: 8,
-    marginBottom: 16
-  },
   tabRowTwo: {
     display: "grid",
     gridTemplateColumns: "repeat(2, 1fr)",
+    gap: 8,
+    marginBottom: 16
+  },
+  tabRowFive: {
+    display: "grid",
+    gridTemplateColumns: "repeat(5, 1fr)",
     gap: 8,
     marginBottom: 16
   },
