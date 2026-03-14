@@ -354,10 +354,11 @@ function ResultEntryForm({
   setDraft,
   drivers,
   onSave,
-  saveLabel
+  saveLabel,
+  adminMode = false
 }) {
   return (
-    <div style={styles.subCard}>
+    <div style={adminMode ? styles.adminCard : styles.subCard}>
       <h3 style={styles.sectionTitle}>{title}</h3>
 
       {[1, 2, 3].map((n) => (
@@ -396,7 +397,7 @@ function ResultEntryForm({
         }
       />
 
-      <button style={styles.secondary} onClick={onSave}>
+      <button style={styles.adminButton} onClick={onSave}>
         {saveLabel}
       </button>
     </div>
@@ -620,6 +621,17 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
   const [isAdmin, setIsAdmin] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  useEffect(() => {
+    const generatedEmail =
+      displayName.trim().length > 0
+        ? `${displayName.trim().toLowerCase().replace(/\s+/g, ".")}@oldsf1.test`
+        : "";
+
+    if (!email || email.endsWith("@oldsf1.test")) {
+      setEmail(generatedEmail);
+    }
+  }, [displayName]);
+
   async function createUser() {
     try {
       setSaving(true);
@@ -655,8 +667,8 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
   }
 
   return (
-    <div style={styles.subCard}>
-      <h3 style={styles.sectionTitle}>Admin: Create User</h3>
+    <div style={styles.adminCard}>
+      <h3 style={styles.sectionTitle}>Create User</h3>
 
       <input
         style={styles.input}
@@ -667,7 +679,7 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
 
       <input
         style={styles.input}
-        placeholder="Email (e.g. john.collett@oldsf1.test)"
+        placeholder="Email"
         type="email"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
@@ -690,7 +702,7 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
         <span>Make admin</span>
       </label>
 
-      <button style={styles.primary} onClick={createUser} disabled={saving}>
+      <button style={styles.adminButton} onClick={createUser} disabled={saving}>
         {saving ? "Creating..." : "Create user"}
       </button>
     </div>
@@ -749,8 +761,8 @@ function AdminUserTipPanel({
   }
 
   return (
-    <div style={styles.subCard}>
-      <h3 style={styles.sectionTitle}>Admin: Enter Picks For Any User</h3>
+    <div style={styles.adminCard}>
+      <h3 style={styles.sectionTitle}>Enter Picks For Any User</h3>
 
       <select
         style={styles.input}
@@ -823,7 +835,7 @@ function AdminUserTipPanel({
         }
       />
 
-      <button style={styles.secondary} onClick={saveTipForUser} disabled={saving}>
+      <button style={styles.adminButton} onClick={saveTipForUser} disabled={saving}>
         {saving ? "Saving..." : "Save user tip"}
       </button>
     </div>
@@ -1400,7 +1412,7 @@ export default function App() {
           {profile?.is_admin ? (
             <button
               type="button"
-              style={activeTab === "admin" ? styles.activeTabButton : styles.tabButton}
+              style={activeTab === "admin" ? styles.adminTabActive : styles.adminTabButton}
               onClick={() => setActiveTab("admin")}
             >
               Admin
@@ -1516,6 +1528,13 @@ export default function App() {
 
         {activeTab === "admin" && profile?.is_admin ? (
           <div style={styles.stack}>
+            <div style={styles.adminBanner}>
+              <div style={styles.adminBadge}>Admin Mode</div>
+              <div style={styles.adminBannerText}>
+                Admin tools are visible only to admins. Regular users won’t see this section.
+              </div>
+            </div>
+
             <AdminCreateUserPanel
               setMsg={setMsg}
               reloadData={() => loadAll(session.user.id)}
@@ -1531,22 +1550,24 @@ export default function App() {
 
             {activeRound?.is_sprint ? (
               <ResultEntryForm
-                title="Admin: Sprint Result"
+                title="Manual Sprint Result"
                 draft={sprintResultDraft}
                 setDraft={setSprintResultDraft}
                 drivers={drivers}
                 onSave={() => saveResult("sprint", sprintResultDraft)}
                 saveLabel="Save sprint result"
+                adminMode={true}
               />
             ) : null}
 
             <ResultEntryForm
-              title="Admin: Grand Prix Result"
+              title="Manual Grand Prix Result"
               draft={raceResultDraft}
               setDraft={setRaceResultDraft}
               drivers={drivers}
               onSave={() => saveResult("race", raceResultDraft)}
               saveLabel="Save grand prix result"
+              adminMode={true}
             />
           </div>
         ) : null}
@@ -1610,6 +1631,34 @@ const styles = {
     borderRadius: 14,
     padding: 16
   },
+  adminCard: {
+    background: "#18130a",
+    border: "1px solid rgba(245, 158, 11, 0.45)",
+    borderRadius: 14,
+    padding: 16,
+    boxShadow: "inset 0 0 0 1px rgba(245, 158, 11, 0.08)"
+  },
+  adminBanner: {
+    background: "linear-gradient(135deg, rgba(245,158,11,0.18), rgba(217,119,6,0.12))",
+    border: "1px solid rgba(245,158,11,0.35)",
+    borderRadius: 16,
+    padding: 16
+  },
+  adminBadge: {
+    display: "inline-block",
+    background: "rgba(245,158,11,0.18)",
+    color: "#fcd34d",
+    border: "1px solid rgba(245,158,11,0.35)",
+    borderRadius: 999,
+    padding: "4px 10px",
+    fontSize: 12,
+    fontWeight: 700,
+    marginBottom: 10
+  },
+  adminBannerText: {
+    color: "#f3f4f6",
+    fontSize: 14
+  },
   sectionTitle: {
     marginTop: 0,
     marginBottom: 12
@@ -1640,6 +1689,15 @@ const styles = {
     background: "#11151c",
     color: "white",
     fontWeight: 700,
+    cursor: "pointer"
+  },
+  adminButton: {
+    padding: "12px 16px",
+    borderRadius: 10,
+    border: "1px solid rgba(245,158,11,0.35)",
+    background: "#f59e0b",
+    color: "#111827",
+    fontWeight: 800,
     cursor: "pointer"
   },
   linkButton: {
@@ -1680,6 +1738,24 @@ const styles = {
     color: "black",
     cursor: "pointer",
     fontWeight: 700
+  },
+  adminTabButton: {
+    padding: 12,
+    borderRadius: 10,
+    border: "1px solid rgba(245,158,11,0.35)",
+    background: "rgba(245,158,11,0.12)",
+    color: "#fcd34d",
+    cursor: "pointer",
+    fontWeight: 700
+  },
+  adminTabActive: {
+    padding: 12,
+    borderRadius: 10,
+    border: "1px solid rgba(245,158,11,0.45)",
+    background: "#f59e0b",
+    color: "#111827",
+    cursor: "pointer",
+    fontWeight: 800
   },
   notice: {
     background: "#171a21",
