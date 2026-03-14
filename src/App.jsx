@@ -167,17 +167,17 @@ function scoreBreakdown(tip, result, isSprint) {
   const picks = [tip.p1_driver_id, tip.p2_driver_id, tip.p3_driver_id];
   const actual = [result.p1_driver_id, result.p2_driver_id, result.p3_driver_id];
 
-  const pickScores = [0, 0, 0];
+  const rawPickScores = [0, 0, 0];
   const pickStates = ["miss", "miss", "miss"];
 
   for (let i = 0; i < 3; i += 1) {
     if (!picks[i] || !actual[i]) continue;
 
     if (picks[i] === actual[i]) {
-      pickScores[i] = 2;
+      rawPickScores[i] = 2;
       pickStates[i] = "exact";
     } else if (actual.includes(picks[i])) {
-      pickScores[i] = 1;
+      rawPickScores[i] = 1;
       pickStates[i] = "partial";
     }
   }
@@ -190,14 +190,18 @@ function scoreBreakdown(tip, result, isSprint) {
     picks.length === 3 &&
     picks.every((driverId, idx) => driverId === actual[idx]);
 
-  const bonus = pickedAllTop3 ? (exactOrder ? 3 : 1) : 0;
+  const rawBonus = pickedAllTop3 ? (exactOrder ? 3 : 1) : 0;
+  const multiplier = isSprint ? 0.5 : 1;
+
+  const pickScores = rawPickScores.map((p) => p * multiplier);
+  const bonus = rawBonus * multiplier;
   const total = pickScores.reduce((sum, p) => sum + p, 0) + bonus;
 
   return {
     pickScores,
     pickStates,
     bonus,
-    total: isSprint ? total / 2 : total
+    total
   };
 }
 
@@ -285,10 +289,11 @@ function PickScoreTag({ state, points }) {
       : styles.pickMiss;
 
   const icon = state === "exact" ? "✓" : state === "partial" ? "•" : "✕";
+  const label = Number.isInteger(points) ? points : points.toFixed(1);
 
   return (
     <span style={style}>
-      {icon} +{points}
+      {icon} +{label}
     </span>
   );
 }
@@ -506,7 +511,7 @@ function TipsCard({ title, tips, profilesById, driverMap, result, isSprint }) {
             </div>
 
             {result && breakdown.bonus > 0 ? (
-              <div style={styles.bonusLine}>Bonus: +{isSprint ? breakdown.bonus / 2 : breakdown.bonus}</div>
+              <div style={styles.bonusLine}>Bonus: +{breakdown.bonus}</div>
             ) : null}
           </div>
         );
