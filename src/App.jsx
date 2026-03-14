@@ -6,6 +6,49 @@ const supabase = createClient(
   import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
+const TEAM_META = {
+  McLaren: {
+    color: "#ff8000",
+    logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/mclaren-logo.png"
+  },
+  Ferrari: {
+    color: "#dc0000",
+    logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/ferrari-logo.png"
+  },
+  Mercedes: {
+    color: "#00d2be",
+    logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/mercedes-logo.png"
+  },
+  "Red Bull": {
+    color: "#1e41ff",
+    logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/red-bull-racing-logo.png"
+  },
+  "Aston Martin": {
+    color: "#006f62",
+    logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/aston-martin-logo.png"
+  },
+  Alpine: {
+    color: "#0090ff",
+    logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/alpine-logo.png"
+  },
+  Williams: {
+    color: "#005aff",
+    logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/williams-logo.png"
+  },
+  Haas: {
+    color: "#b6babd",
+    logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/haas-f1-team-logo.png"
+  },
+  RB: {
+    color: "#6692ff",
+    logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/rb-logo.png"
+  },
+  Sauber: {
+    color: "#52e252",
+    logo: "https://media.formula1.com/content/dam/fom-website/teams/2024/kick-sauber-logo.png"
+  }
+};
+
 function fmt(dateStr) {
   if (!dateStr) return "TBC";
   return new Date(dateStr).toLocaleString();
@@ -70,12 +113,6 @@ function getRoundStatus(round, now) {
   };
 }
 
-// Scoring:
-// - 2 points for each driver in correct position
-// - 1 point for each driver in top 3 but wrong position
-// - +1 bonus if all top 3 picked but wrong order
-// - +3 bonus if all top 3 in exact order
-// - sprint = half points
 function scoreTip(tip, result, isSprint) {
   if (!tip || !result) return 0;
 
@@ -127,6 +164,59 @@ function blankResult(resultType) {
     p3_driver_id: "",
     oscar_finish: ""
   };
+}
+
+function getResultStatus(result) {
+  if (!result) return { label: "Pending", tone: "pending" };
+  if ((result.source || "").toLowerCase() === "manual") {
+    return { label: "Manual", tone: "manual" };
+  }
+  return { label: "Synced", tone: "synced" };
+}
+
+function TeamLogo({ team, size = 18 }) {
+  const meta = TEAM_META[team];
+  if (!meta?.logo) return null;
+
+  return (
+    <img
+      src={meta.logo}
+      alt={team}
+      style={{
+        width: size,
+        height: size,
+        objectFit: "contain",
+        borderRadius: 4,
+        background: "white",
+        padding: 2
+      }}
+    />
+  );
+}
+
+function DriverLabel({ driverId, driverMap, size = 18 }) {
+  const driver = driverMap.get(driverId);
+  if (!driver) return <span>{driverId || "-"}</span>;
+
+  return (
+    <span style={styles.inlineFlex}>
+      <TeamLogo team={driver.team} size={size} />
+      <span>{driver.name}</span>
+    </span>
+  );
+}
+
+function ResultBadge({ result }) {
+  const status = getResultStatus(result);
+
+  const style =
+    status.tone === "synced"
+      ? styles.badgeSynced
+      : status.tone === "manual"
+      ? styles.badgeManual
+      : styles.badgePending;
+
+  return <span style={style}>{status.label}</span>;
 }
 
 function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel }) {
@@ -234,46 +324,47 @@ function ResultEntryForm({
   );
 }
 
-function ResultCard({ title, result, driverNameById }) {
-  if (!result) {
-    return (
-      <div style={styles.subCard}>
-        <h3 style={styles.sectionTitle}>{title}</h3>
-        <p style={styles.mutedText}>No result loaded yet.</p>
-      </div>
-    );
-  }
-
+function ResultCard({ title, result, driverMap }) {
   return (
     <div style={styles.subCard}>
-      <h3 style={styles.sectionTitle}>{title}</h3>
-      <div style={styles.infoRow}>
-        <span style={styles.infoLabel}>P1</span>
-        <span>{driverNameById.get(result.p1_driver_id) || result.p1_driver_id || "-"}</span>
+      <div style={styles.cardHeaderRow}>
+        <h3 style={styles.sectionTitle}>{title}</h3>
+        <ResultBadge result={result} />
       </div>
-      <div style={styles.infoRow}>
-        <span style={styles.infoLabel}>P2</span>
-        <span>{driverNameById.get(result.p2_driver_id) || result.p2_driver_id || "-"}</span>
-      </div>
-      <div style={styles.infoRow}>
-        <span style={styles.infoLabel}>P3</span>
-        <span>{driverNameById.get(result.p3_driver_id) || result.p3_driver_id || "-"}</span>
-      </div>
-      <div style={styles.infoRow}>
-        <span style={styles.infoLabel}>Oscar finish</span>
-        <span>{result.oscar_finish ?? "DNF / N/A"}</span>
-      </div>
-      {"source" in result ? (
-        <div style={styles.infoRow}>
-          <span style={styles.infoLabel}>Source</span>
-          <span>{result.source || "manual"}</span>
-        </div>
-      ) : null}
+
+      {!result ? (
+        <p style={styles.mutedText}>No result loaded yet.</p>
+      ) : (
+        <>
+          <div style={styles.infoRow}>
+            <span style={styles.infoLabel}>P1</span>
+            <DriverLabel driverId={result.p1_driver_id} driverMap={driverMap} />
+          </div>
+          <div style={styles.infoRow}>
+            <span style={styles.infoLabel}>P2</span>
+            <DriverLabel driverId={result.p2_driver_id} driverMap={driverMap} />
+          </div>
+          <div style={styles.infoRow}>
+            <span style={styles.infoLabel}>P3</span>
+            <DriverLabel driverId={result.p3_driver_id} driverMap={driverMap} />
+          </div>
+          <div style={styles.infoRow}>
+            <span style={styles.infoLabel}>Oscar finish</span>
+            <span>{result.oscar_finish ?? "DNF / N/A"}</span>
+          </div>
+          {"source" in result ? (
+            <div style={styles.infoRow}>
+              <span style={styles.infoLabel}>Source</span>
+              <span>{result.source || "unknown"}</span>
+            </div>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
 
-function TipsCard({ title, tips, profilesById, driverNameById }) {
+function TipsCard({ title, tips, profilesById, driverMap }) {
   if (!tips.length) {
     return (
       <div style={styles.subCard}>
@@ -289,10 +380,21 @@ function TipsCard({ title, tips, profilesById, driverNameById }) {
       {tips.map((tip) => (
         <div key={`${tip.user_id}-${tip.result_type}`} style={styles.tipEntry}>
           <div style={styles.tipName}>{profilesById.get(tip.user_id) || "Player"}</div>
-          <div style={styles.tipLine}>P1: {driverNameById.get(tip.p1_driver_id) || "-"}</div>
-          <div style={styles.tipLine}>P2: {driverNameById.get(tip.p2_driver_id) || "-"}</div>
-          <div style={styles.tipLine}>P3: {driverNameById.get(tip.p3_driver_id) || "-"}</div>
-          <div style={styles.tipLine}>Oscar: {tip.oscar_finish ?? "-"}</div>
+          <div style={styles.tipLine}>
+            <span style={styles.tipKey}>P1:</span>{" "}
+            <DriverLabel driverId={tip.p1_driver_id} driverMap={driverMap} size={16} />
+          </div>
+          <div style={styles.tipLine}>
+            <span style={styles.tipKey}>P2:</span>{" "}
+            <DriverLabel driverId={tip.p2_driver_id} driverMap={driverMap} size={16} />
+          </div>
+          <div style={styles.tipLine}>
+            <span style={styles.tipKey}>P3:</span>{" "}
+            <DriverLabel driverId={tip.p3_driver_id} driverMap={driverMap} size={16} />
+          </div>
+          <div style={styles.tipLine}>
+            <span style={styles.tipKey}>Oscar:</span> {tip.oscar_finish ?? "-"}
+          </div>
         </div>
       ))}
     </div>
@@ -589,8 +691,8 @@ export default function App() {
     [activeRound, now]
   );
 
-  const driverNameById = useMemo(() => {
-    return new Map((drivers || []).map((d) => [d.id, d.name]));
+  const driverMap = useMemo(() => {
+    return new Map((drivers || []).map((d) => [d.id, d]));
   }, [drivers]);
 
   const profilesById = useMemo(() => {
@@ -633,7 +735,8 @@ export default function App() {
         byUser.set(tip.user_id, {
           user_id: tip.user_id,
           name: profilesById.get(tip.user_id) || "Player",
-          total: 0
+          total: 0,
+          favoriteTeam: null
         });
       }
     });
@@ -646,10 +749,14 @@ export default function App() {
       if (!row) return;
 
       row.total += scoreTip(tip, result, tip.result_type === "sprint");
+
+      if (!row.favoriteTeam && tip.p1_driver_id) {
+        row.favoriteTeam = driverMap.get(tip.p1_driver_id)?.team || null;
+      }
     });
 
     return [...byUser.values()].sort((a, b) => b.total - a.total);
-  }, [tips, results, profilesById]);
+  }, [tips, results, profilesById, driverMap]);
 
   async function saveTip(resultType, draft) {
     if (!session?.user || !activeRound) return;
@@ -734,10 +841,22 @@ export default function App() {
         }
       );
 
-      const data = await res.json().catch(() => ({}));
+      const rawText = await res.text();
+      let data = {};
+
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = { rawText };
+      }
 
       if (!res.ok) {
-        throw new Error(data?.error || "Sync failed");
+        throw new Error(
+          data?.error ||
+            data?.message ||
+            data?.rawText ||
+            `Sync failed (${res.status})`
+        );
       }
 
       setMsg(
@@ -912,14 +1031,25 @@ export default function App() {
             {leaderboard.length === 0 ? (
               <p>No tips yet.</p>
             ) : (
-              leaderboard.map((row, i) => (
-                <div key={row.user_id} style={styles.leaderRow}>
-                  <span>
-                    #{i + 1} {row.name}
-                  </span>
-                  <strong>{row.total}</strong>
-                </div>
-              ))
+              leaderboard.map((row, i) => {
+                const accent = TEAM_META[row.favoriteTeam]?.color || "#2a2f3a";
+                return (
+                  <div
+                    key={row.user_id}
+                    style={{
+                      ...styles.leaderRow,
+                      borderLeft: `4px solid ${accent}`,
+                      paddingLeft: 12
+                    }}
+                  >
+                    <span style={styles.inlineFlex}>
+                      <span>#{i + 1} {row.name}</span>
+                      {row.favoriteTeam ? <TeamLogo team={row.favoriteTeam} size={18} /> : null}
+                    </span>
+                    <strong>{row.total}</strong>
+                  </div>
+                );
+              })
             )}
           </div>
         ) : null}
@@ -930,14 +1060,14 @@ export default function App() {
               <ResultCard
                 title="Sprint Result"
                 result={selectedSprintResult}
-                driverNameById={driverNameById}
+                driverMap={driverMap}
               />
             ) : null}
 
             <ResultCard
               title="Grand Prix Result"
               result={selectedRaceResult}
-              driverNameById={driverNameById}
+              driverMap={driverMap}
             />
           </div>
         ) : null}
@@ -949,7 +1079,7 @@ export default function App() {
                 title="Sprint Tips"
                 tips={selectedSprintTips}
                 profilesById={profilesById}
-                driverNameById={driverNameById}
+                driverMap={driverMap}
               />
             ) : null}
 
@@ -957,7 +1087,7 @@ export default function App() {
               title="Grand Prix Tips"
               tips={selectedRaceTips}
               profilesById={profilesById}
-              driverNameById={driverNameById}
+              driverMap={driverMap}
             />
           </div>
         ) : null}
@@ -1046,7 +1176,8 @@ const styles = {
     padding: 16
   },
   sectionTitle: {
-    marginTop: 0
+    marginTop: 0,
+    marginBottom: 12
   },
   input: {
     width: "100%",
@@ -1125,6 +1256,7 @@ const styles = {
   leaderRow: {
     display: "flex",
     justifyContent: "space-between",
+    alignItems: "center",
     padding: "10px 0",
     borderBottom: "1px solid #2a2f3a"
   },
@@ -1153,6 +1285,7 @@ const styles = {
   infoRow: {
     display: "flex",
     justifyContent: "space-between",
+    alignItems: "center",
     gap: 12,
     padding: "8px 0",
     borderBottom: "1px solid #232833"
@@ -1171,10 +1304,52 @@ const styles = {
   tipLine: {
     color: "#d1d5db",
     fontSize: 14,
-    marginBottom: 3
+    marginBottom: 4
+  },
+  tipKey: {
+    color: "#9ca3af"
   },
   mutedText: {
     color: "#9ca3af",
     margin: 0
+  },
+  inlineFlex: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8
+  },
+  cardHeaderRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8
+  },
+  badgeSynced: {
+    background: "rgba(34,197,94,0.15)",
+    color: "#86efac",
+    border: "1px solid rgba(34,197,94,0.35)",
+    borderRadius: 999,
+    padding: "4px 10px",
+    fontSize: 12,
+    fontWeight: 700
+  },
+  badgeManual: {
+    background: "rgba(245,158,11,0.15)",
+    color: "#fcd34d",
+    border: "1px solid rgba(245,158,11,0.35)",
+    borderRadius: 999,
+    padding: "4px 10px",
+    fontSize: 12,
+    fontWeight: 700
+  },
+  badgePending: {
+    background: "rgba(148,163,184,0.12)",
+    color: "#cbd5e1",
+    border: "1px solid rgba(148,163,184,0.3)",
+    borderRadius: 999,
+    padding: "4px 10px",
+    fontSize: 12,
+    fontWeight: 700
   }
 };
