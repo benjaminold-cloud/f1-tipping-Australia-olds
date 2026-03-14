@@ -636,7 +636,6 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
     try {
       setSaving(true);
 
-      await supabase.auth.refreshSession();
       const {
         data: { session }
       } = await supabase.auth.getSession();
@@ -646,7 +645,7 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
         throw new Error("No active admin session. Please sign in again.");
       }
 
-      const { data, error } = await supabase.functions.invoke("admin-create-user", {
+      const invokePromise = supabase.functions.invoke("admin-create-user", {
         body: {
           display_name: displayName,
           email,
@@ -657,6 +656,13 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
           Authorization: `Bearer ${accessToken}`
         }
       });
+
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Create user timed out. Please try again.")), 15000)
+      );
+
+      const result = await Promise.race([invokePromise, timeoutPromise]);
+      const { data, error } = result;
 
       if (error) {
         throw new Error(error.message || "Failed to create user");
@@ -728,7 +734,8 @@ function AdminTipForm({
   setDraft,
   drivers,
   onSave,
-  saveLabel
+  saveLabel,
+  disabled = false
 }) {
   return (
     <div style={styles.adminCard}>
@@ -770,7 +777,7 @@ function AdminTipForm({
         }
       />
 
-      <button style={styles.adminButton} onClick={onSave}>
+      <button style={styles.adminButton} onClick={onSave} disabled={disabled}>
         {saveLabel}
       </button>
     </div>
@@ -904,6 +911,7 @@ function AdminUserTipPanel({
               drivers={drivers}
               onSave={() => saveTipForUser("sprint", sprintDraft, setSavingSprint)}
               saveLabel={savingSprint ? "Saving..." : "Save sprint picks"}
+              disabled={savingSprint}
             />
           ) : null}
 
@@ -914,6 +922,7 @@ function AdminUserTipPanel({
             drivers={drivers}
             onSave={() => saveTipForUser("race", raceDraft, setSavingRace)}
             saveLabel={savingRace ? "Saving..." : "Save grand prix picks"}
+            disabled={savingRace}
           />
         </>
       ) : null}
@@ -1103,46 +1112,55 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
 
   async function loadAll(userIdOverride) {
-    const [
-      { data: profilesData },
-      { data: driversData },
-      { data: roundsData },
-      { data: tipsData },
-      { data: resultsData }
-    ] = await Promise.all([
-      supabase.from("profiles").select("id, display_name, is_admin").order("display_name"),
-      supabase.from("drivers").select("*").order("name"),
-      supabase.from("rounds").select("*").eq("season", 2026).order("round_number"),
-      supabase.from("tips").select("*"),
-      supabase.from("results").select("*")
-    ]);
+    try {
+      const [
+        { data: profilesData, error: profilesError },
+        { data: driversData, error: driversError },
+        { data: roundsData, error: roundsError },
+        { data: tipsData, error: tipsError },
+        { data: resultsData, error: resultsError }
+      ] = await Promise.all([
+        supabase.from("profiles").select("id, display_name, is_admin").order("display_name"),
+        supabase.from("drivers").select("*").order("name"),
+        supabase.from("rounds").select("*").eq("season", 2026).order("round_number"),
+        supabase.from("tips").select("*"),
+        supabase.from("results").select("*")
+      ]);
 
-    setProfiles(profilesData || []);
-    setDrivers(driversData || []);
-    setRounds(roundsData || []);
-    setTips(tipsData || []);
-    setResults(resultsData || []);
+      const firstError =
+        profilesError || driversError || roundsError || tipsError || resultsError;
 
-    const userId = userIdOverride || session?.user?.id;
-    const myProfile = (profilesData || []).find((p) => p.id === userId) || null;
-    setProfile(myProfile);
+      if (firstError) throw firstError;
 
-    const firstOpen =
-      (roundsData || []).find((r) => !getRoundStatus(r, new Date()).locked) ||
-      (roundsData || [])[0];
+      setProfiles(profilesData || []);
+      setDrivers(driversData || []);
+      setRounds(roundsData || []);
+      setTips(tipsData || []);
+      setResults(resultsData || []);
 
-    if (firstOpen) {
-      setActiveRoundId(firstOpen.id);
+      const userId = userIdOverride || session?.user?.id;
+      const myProfile = (profilesData || []).find((p) => p.id === userId) || null;
+      setProfile(myProfile);
 
-      const mySprintTip = (tipsData || []).find(
-        (t) => t.round_id === firstOpen.id && t.user_id === userId && t.result_type === "sprint"
-      );
-      const myRaceTip = (tipsData || []).find(
-        (t) => t.round_id === firstOpen.id && t.user_id === userId && t.result_type === "race"
-      );
+      const firstOpen =
+        (roundsData || []).find((r) => !getRoundStatus(r, new Date()).locked) ||
+        (roundsData || [])[0];
 
-      setSprintDraft(mySprintTip || blankTip("sprint"));
-      setRaceDraft(myRaceTip || blankTip("race"));
+      if (firstOpen) {
+        setActiveRoundId(firstOpen.id);
+
+        const mySprintTip = (tipsData || []).find(
+          (t) => t.round_id === firstOpen.id && t.user_id === userId && t.result_type === "sprint"
+        );
+        const myRaceTip = (tipsData || []).find(
+          (t) => t.round_id === firstOpen.id && t.user_id === userId && t.result_type === "race"
+        );
+
+        setSprintDraft(mySprintTip || blankTip("sprint"));
+        setRaceDraft(myRaceTip || blankTip("race"));
+      }
+    } catch (err) {
+      setMsg(err?.message || "Load failed");
     }
   }
 
