@@ -714,13 +714,30 @@ export default function App() {
       setSyncing(true);
       setMsg("Syncing results...");
 
-      const { data, error } = await supabase.functions.invoke("sync-results", {
-        body: {}
-      });
+      const {
+        data: { session: currentSession }
+      } = await supabase.auth.getSession();
 
-      if (error) {
-        setMsg(error.message || "Sync failed");
-        return;
+      if (!currentSession?.access_token) {
+        throw new Error("No active session token");
+      }
+
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sync-results`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${currentSession.access_token}`
+          },
+          body: JSON.stringify({})
+        }
+      );
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Sync failed");
       }
 
       setMsg(
@@ -729,9 +746,7 @@ export default function App() {
           : "Sync complete"
       );
 
-      if (session?.user?.id) {
-        await loadAll(session.user.id);
-      }
+      await loadAll(currentSession.user.id);
     } catch (err) {
       setMsg(err?.message || "Sync failed");
     } finally {
