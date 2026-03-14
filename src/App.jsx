@@ -609,34 +609,18 @@ export default function App() {
       setSyncing(true);
       setMsg("Syncing results...");
 
-      const {
-        data: { session: currentSession }
-      } = await supabase.auth.getSession();
+      const { data, error } = await supabase.functions.invoke("sync-results", {
+        body: {}
+      });
 
-      const accessToken = currentSession?.access_token;
-
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sync-results`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: accessToken ? `Bearer ${accessToken}` : ""
-          },
-          body: JSON.stringify({})
-        }
-      );
-
-      const json = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        setMsg(json?.error || "Sync failed");
+      if (error) {
+        setMsg(error.message || "Sync failed");
         return;
       }
 
       setMsg(
-        json?.actions?.length
-          ? `Sync complete: ${json.actions.join(", ")}`
+        data?.actions?.length
+          ? `Sync complete: ${data.actions.join(", ")}`
           : "Sync complete"
       );
 
