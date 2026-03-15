@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -332,6 +332,26 @@ function PickScoreTag({ state, points }) {
   );
 }
 
+function Toast({ toast, onClose }) {
+  if (!toast?.message) return null;
+
+  const toneStyle =
+    toast.type === "success"
+      ? styles.toastSuccess
+      : toast.type === "error"
+      ? styles.toastError
+      : styles.toastInfo;
+
+  return (
+    <div style={{ ...styles.toast, ...toneStyle }}>
+      <div style={styles.toastMessage}>{toast.message}</div>
+      <button style={styles.toastClose} onClick={onClose}>
+        ×
+      </button>
+    </div>
+  );
+}
+
 function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel, saving = false }) {
   return (
     <div style={styles.subCard}>
@@ -400,8 +420,8 @@ function ResultEntryForm({
         <select
           key={n}
           style={styles.input}
-          disabled={saving}
           value={draft[`p${n}_driver_id`] || ""}
+          disabled={saving}
           onChange={(e) =>
             setDraft((prev) => ({
               ...prev,
@@ -566,7 +586,7 @@ function TipsCard({ title, tips, profilesById, driverMap, result, isSprint }) {
   );
 }
 
-function ProfilePanel({ session, profile, setMsg, reloadData }) {
+function ProfilePanel({ session, profile, pushToast, reloadData }) {
   const [displayName, setDisplayName] = useState(profile?.display_name || "");
   const [email, setEmail] = useState(session?.user?.email || "");
   const [password, setPassword] = useState("");
@@ -633,19 +653,17 @@ function ProfilePanel({ session, profile, setMsg, reloadData }) {
         setPassword("");
       }
 
-      setMsg(
-        updates.length
-          ? `Updated ${updates.join(", ")}`
-          : "No profile changes made"
-      );
-
       await reloadData();
 
       if (authChanged) {
-        setMsg("Profile updated. If you changed email, check your inbox for confirmation.");
+        pushToast("Profile updated. If you changed email, check your inbox for confirmation.", "success");
+      } else if (updates.length) {
+        pushToast(`Updated ${updates.join(", ")}`, "success");
+      } else {
+        pushToast("No profile changes made", "info");
       }
     } catch (err) {
-      setMsg(err?.message || "Failed to update profile");
+      pushToast(err?.message || "Failed to update profile", "error");
     } finally {
       setSaving(false);
     }
@@ -685,7 +703,7 @@ function ProfilePanel({ session, profile, setMsg, reloadData }) {
   );
 }
 
-function AdminCreateUserPanel({ setMsg, reloadData }) {
+function AdminCreateUserPanel({ pushToast, reloadData }) {
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("OldsF1Start!");
@@ -752,7 +770,7 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
         throw new Error(data?.error || "Failed to create user");
       }
 
-      setMsg(`Created user: ${data.display_name} (${data.email})`);
+      pushToast(`Created user: ${data.display_name} (${data.email})`, "success");
       setDisplayName("");
       setEmail("");
       setPassword("OldsF1Start!");
@@ -760,9 +778,9 @@ function AdminCreateUserPanel({ setMsg, reloadData }) {
       await reloadData();
     } catch (err) {
       if (err?.name === "AbortError") {
-        setMsg("Create user timed out. Please try again.");
+        pushToast("Create user timed out. Please try again.", "error");
       } else {
-        setMsg(err?.message || "Failed to create user");
+        pushToast(err?.message || "Failed to create user", "error");
       }
     } finally {
       setSaving(false);
@@ -875,7 +893,7 @@ function AdminUserTipPanel({
   profiles,
   drivers,
   tips,
-  setMsg,
+  pushToast,
   reloadData
 }) {
   const [roundId, setRoundId] = useState("");
@@ -966,18 +984,19 @@ function AdminUserTipPanel({
         throw new Error(data?.error || "Failed to save tip");
       }
 
-      setMsg(
+      pushToast(
         `${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved for ${
           profiles.find((p) => p.id === userId)?.display_name || "player"
-        }`
+        }`,
+        "success"
       );
 
       await reloadData();
     } catch (err) {
       if (err?.name === "AbortError") {
-        setMsg("Save tip timed out. Please try again.");
+        pushToast("Save tip timed out. Please try again.", "error");
       } else {
-        setMsg(err?.message || "Failed to save tip");
+        pushToast(err?.message || "Failed to save tip", "error");
       }
     } finally {
       setSaving(false);
@@ -1229,8 +1248,34 @@ export default function App() {
   const [savingMyRace, setSavingMyRace] = useState(false);
   const [savingSprintResult, setSavingSprintResult] = useState(false);
   const [savingRaceResult, setSavingRaceResult] = useState(false);
+  const [toast, setToast] = useState(null);
+  const toastTimerRef = useRef(null);
+  const resumeInFlightRef = useRef(false);
 
-  async function loadAll(userIdOverride) {
+  function pushToast(message, type = "info") {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+
+    setToast({
+      message,
+      type,
+      id: Date.now()
+    });
+
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+    }, 3500);
+  }
+
+  function clearToast() {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    setToast(null);
+  }
+
+  async function loadAll(userIdOverride, { silent = false } = {}) {
     try {
       const [
         { data: profilesData, error: profilesError },
@@ -1266,20 +1311,25 @@ export default function App() {
         (roundsData || [])[0];
 
       if (firstOpen) {
-        setActiveRoundId(firstOpen.id);
+        setActiveRoundId((prev) => prev || firstOpen.id);
+
+        const roundToUse = activeRoundId || firstOpen.id;
 
         const mySprintTip = (tipsData || []).find(
-          (t) => t.round_id === firstOpen.id && t.user_id === userId && t.result_type === "sprint"
+          (t) => t.round_id === roundToUse && t.user_id === userId && t.result_type === "sprint"
         );
         const myRaceTip = (tipsData || []).find(
-          (t) => t.round_id === firstOpen.id && t.user_id === userId && t.result_type === "race"
+          (t) => t.round_id === roundToUse && t.user_id === userId && t.result_type === "race"
         );
 
         setSprintDraft(mySprintTip || blankTip("sprint"));
         setRaceDraft(myRaceTip || blankTip("race"));
       }
     } catch (err) {
-      setMsg(err?.message || "Load failed");
+      if (!silent) {
+        setMsg(err?.message || "Load failed");
+        pushToast(err?.message || "Load failed", "error");
+      }
     }
   }
 
@@ -1311,6 +1361,32 @@ export default function App() {
     }
   }
 
+  async function handleAppResume() {
+    if (resumeInFlightRef.current) return;
+
+    try {
+      resumeInFlightRef.current = true;
+
+      const {
+        data: { session: resumedSession }
+      } = await supabase.auth.getSession();
+
+      setSession(resumedSession || null);
+
+      if (!resumedSession?.user) {
+        setProfile(null);
+        pushToast("Session expired. Please sign in again.", "error");
+        return;
+      }
+
+      await loadAll(resumedSession.user.id, { silent: true });
+    } catch (_err) {
+      pushToast("Could not refresh app state. Please try again.", "error");
+    } finally {
+      resumeInFlightRef.current = false;
+    }
+  }
+
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
@@ -1329,7 +1405,7 @@ export default function App() {
     } = supabase.auth.onAuthStateChange(async (_event, sess) => {
       setSession(sess);
       if (sess?.user) {
-        await loadAll(sess.user.id);
+        await loadAll(sess.user.id, { silent: true });
       } else {
         setProfile(null);
       }
@@ -1337,6 +1413,26 @@ export default function App() {
 
     return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    async function onVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        await handleAppResume();
+      }
+    }
+
+    async function onWindowFocus() {
+      await handleAppResume();
+    }
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onWindowFocus);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onWindowFocus);
+    };
+  }, [session]);
 
   const activeRound = useMemo(
     () => rounds.find((r) => r.id === activeRoundId) || null,
@@ -1479,14 +1575,18 @@ export default function App() {
         throw new Error(data?.error || "Failed to save tip");
       }
 
-      setMsg(`${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved`);
-      await loadAll(session.user.id);
+      const successMessage = `${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved`;
+      setMsg(successMessage);
+      pushToast(successMessage, "success");
+      await loadAll(session.user.id, { silent: true });
     } catch (err) {
-      if (err?.name === "AbortError") {
-        setMsg("Save tip timed out. Please try again.");
-      } else {
-        setMsg(err?.message || "Failed to save tip");
-      }
+      const message =
+        err?.name === "AbortError"
+          ? "Save tip timed out. Please try again."
+          : err?.message || "Failed to save tip";
+
+      setMsg(message);
+      pushToast(message, "error");
     } finally {
       if (resultType === "sprint") setSavingMySprint(false);
       if (resultType === "race") setSavingMyRace(false);
@@ -1528,14 +1628,18 @@ export default function App() {
         throw new Error(data?.error || "Failed to save result");
       }
 
-      setMsg(`${resultType === "sprint" ? "Sprint" : "Grand Prix"} result saved`);
-      await loadAll(session.user.id);
+      const successMessage = `${resultType === "sprint" ? "Sprint" : "Grand Prix"} result saved`;
+      setMsg(successMessage);
+      pushToast(successMessage, "success");
+      await loadAll(session.user.id, { silent: true });
     } catch (err) {
-      if (err?.name === "AbortError") {
-        setMsg("Save result timed out. Please try again.");
-      } else {
-        setMsg(err?.message || "Failed to save result");
-      }
+      const message =
+        err?.name === "AbortError"
+          ? "Save result timed out. Please try again."
+          : err?.message || "Failed to save result";
+
+      setMsg(message);
+      pushToast(message, "error");
     } finally {
       if (resultType === "sprint") setSavingSprintResult(false);
       if (resultType === "race") setSavingRaceResult(false);
@@ -1548,6 +1652,7 @@ export default function App() {
     try {
       setSyncing(true);
       setMsg("Syncing results...");
+      pushToast("Syncing results...", "info");
 
       const syncPromise = supabase.functions.invoke("sync-results", {
         body: {}
@@ -1564,17 +1669,21 @@ export default function App() {
         throw new Error(error.message || "Sync failed");
       }
 
-      setMsg(
+      const message =
         data?.actions?.length
           ? `Sync complete: ${data.actions.join(", ")}`
-          : "Sync complete"
-      );
+          : "Sync complete";
+
+      setMsg(message);
+      pushToast(message, "success");
 
       if (session?.user?.id) {
-        await loadAll(session.user.id);
+        await loadAll(session.user.id, { silent: true });
       }
     } catch (err) {
-      setMsg(err?.message || "Sync failed");
+      const message = err?.message || "Sync failed";
+      setMsg(message);
+      pushToast(message, "error");
     } finally {
       setSyncing(false);
     }
@@ -1600,8 +1709,11 @@ export default function App() {
       setActiveRoundId(null);
       setMsg("");
       setActiveTab("tips");
+      pushToast("Signed out", "success");
     } catch (err) {
-      setMsg(err?.message || "Sign out failed");
+      const message = err?.message || "Sign out failed";
+      setMsg(message);
+      pushToast(message, "error");
     }
   }
 
@@ -1836,8 +1948,8 @@ export default function App() {
           <ProfilePanel
             session={session}
             profile={profile}
-            setMsg={setMsg}
-            reloadData={() => loadAll(session.user.id)}
+            pushToast={pushToast}
+            reloadData={() => loadAll(session.user.id, { silent: true })}
           />
         ) : null}
 
@@ -1852,8 +1964,8 @@ export default function App() {
 
             <div style={styles.adminPanelWrap}>
               <AdminCreateUserPanel
-                setMsg={setMsg}
-                reloadData={() => loadAll(session.user.id)}
+                pushToast={pushToast}
+                reloadData={() => loadAll(session.user.id, { silent: true })}
               />
 
               <AdminUserTipPanel
@@ -1861,8 +1973,8 @@ export default function App() {
                 profiles={profiles}
                 drivers={drivers}
                 tips={tips}
-                setMsg={setMsg}
-                reloadData={() => loadAll(session.user.id)}
+                pushToast={pushToast}
+                reloadData={() => loadAll(session.user.id, { silent: true })}
               />
 
               {activeRound?.is_sprint ? (
@@ -1892,6 +2004,8 @@ export default function App() {
           </div>
         ) : null}
       </div>
+
+      <Toast toast={toast} onClose={clearToast} />
     </div>
   );
 }
@@ -2253,5 +2367,50 @@ const styles = {
   adminSectionWrap: {
     display: "grid",
     gap: 16
+  },
+  toast: {
+    position: "fixed",
+    right: 16,
+    bottom: 16,
+    minWidth: 260,
+    maxWidth: 380,
+    borderRadius: 14,
+    padding: "14px 16px",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+    zIndex: 9999,
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12
+  },
+  toastSuccess: {
+    background: "#102418",
+    border: "1px solid rgba(34,197,94,0.45)",
+    color: "#bbf7d0"
+  },
+  toastError: {
+    background: "#2a1115",
+    border: "1px solid rgba(239,68,68,0.45)",
+    color: "#fecaca"
+  },
+  toastInfo: {
+    background: "#111827",
+    border: "1px solid rgba(148,163,184,0.35)",
+    color: "#e5e7eb"
+  },
+  toastMessage: {
+    fontSize: 14,
+    lineHeight: 1.4,
+    fontWeight: 600
+  },
+  toastClose: {
+    background: "transparent",
+    border: "none",
+    color: "inherit",
+    fontSize: 20,
+    lineHeight: 1,
+    cursor: "pointer",
+    padding: 0,
+    marginTop: -2
   }
 };
