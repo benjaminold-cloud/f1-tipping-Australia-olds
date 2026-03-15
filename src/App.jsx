@@ -332,7 +332,7 @@ function PickScoreTag({ state, points }) {
   );
 }
 
-function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel }) {
+function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel, saving = false }) {
   return (
     <div style={styles.subCard}>
       <h3 style={styles.sectionTitle}>{title}</h3>
@@ -341,7 +341,7 @@ function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel 
         <select
           key={n}
           style={styles.input}
-          disabled={disabled}
+          disabled={disabled || saving}
           value={draft[`p${n}_driver_id`] || ""}
           onChange={(e) =>
             setDraft((prev) => ({
@@ -364,7 +364,7 @@ function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel 
         type="number"
         min="1"
         max="22"
-        disabled={disabled}
+        disabled={disabled || saving}
         placeholder="Oscar finish"
         value={draft.oscar_finish ?? ""}
         onChange={(e) =>
@@ -375,8 +375,8 @@ function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel 
         }
       />
 
-      <button style={styles.primary} onClick={onSave} disabled={disabled}>
-        {disabled ? "Locked" : saveLabel}
+      <button style={styles.primary} onClick={onSave} disabled={disabled || saving}>
+        {disabled ? "Locked" : saving ? "Saving..." : saveLabel}
       </button>
     </div>
   );
@@ -389,7 +389,8 @@ function ResultEntryForm({
   drivers,
   onSave,
   saveLabel,
-  adminMode = false
+  adminMode = false,
+  saving = false
 }) {
   return (
     <div style={adminMode ? styles.adminCard : styles.subCard}>
@@ -399,6 +400,7 @@ function ResultEntryForm({
         <select
           key={n}
           style={styles.input}
+          disabled={saving}
           value={draft[`p${n}_driver_id`] || ""}
           onChange={(e) =>
             setDraft((prev) => ({
@@ -421,6 +423,7 @@ function ResultEntryForm({
         type="number"
         min="1"
         max="22"
+        disabled={saving}
         placeholder="Oscar finish"
         value={draft.oscar_finish ?? ""}
         onChange={(e) =>
@@ -431,8 +434,8 @@ function ResultEntryForm({
         }
       />
 
-      <button style={styles.adminButton} onClick={onSave}>
-        {saveLabel}
+      <button style={styles.adminButton} onClick={onSave} disabled={saving}>
+        {saving ? "Saving..." : saveLabel}
       </button>
     </div>
   );
@@ -827,6 +830,7 @@ function AdminTipForm({
           key={n}
           style={styles.input}
           value={draft[`p${n}_driver_id`] || ""}
+          disabled={disabled}
           onChange={(e) =>
             setDraft((prev) => ({
               ...prev,
@@ -849,6 +853,7 @@ function AdminTipForm({
         min="1"
         max="22"
         placeholder="Oscar finish"
+        disabled={disabled}
         value={draft.oscar_finish ?? ""}
         onChange={(e) =>
           setDraft((prev) => ({
@@ -920,38 +925,60 @@ function AdminUserTipPanel({
         throw new Error("Select a round and player");
       }
 
-      const payload = {
-        round_id: Number(roundId),
-        user_id: userId,
-        result_type: resultType,
-        p1_driver_id: draft.p1_driver_id || null,
-        p2_driver_id: draft.p2_driver_id || null,
-        p3_driver_id: draft.p3_driver_id || null,
-        oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
-        updated_at: new Date().toISOString()
-      };
+      const {
+        data: { session }
+      } = await supabase.auth.getSession();
 
-      const savePromise = supabase
-        .from("tips")
-        .upsert(payload, { onConflict: "round_id,user_id,result_type" });
+      const accessToken = session?.access_token;
+      if (!accessToken) {
+        throw new Error("Session expired. Please sign in again.");
+      }
 
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Save tip timed out. Please try again.")), 15000)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-save-tip`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`
+          },
+          body: JSON.stringify({
+            round_id: Number(roundId),
+            user_id: userId,
+            result_type: resultType,
+            p1_driver_id: draft.p1_driver_id || null,
+            p2_driver_id: draft.p2_driver_id || null,
+            p3_driver_id: draft.p3_driver_id || null,
+            oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null
+          }),
+          signal: controller.signal
+        }
       );
 
-      const saveResult = await Promise.race([savePromise, timeoutPromise]);
-      const { error } = saveResult;
+      clearTimeout(timeoutId);
 
-      if (error) throw error;
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || "Failed to save tip");
+      }
 
       setMsg(
         `${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved for ${
           profiles.find((p) => p.id === userId)?.display_name || "player"
         }`
       );
+
       await reloadData();
     } catch (err) {
-      setMsg(err?.message || "Failed to save tip");
+      if (err?.name === "AbortError") {
+        setMsg("Save tip timed out. Please try again.");
+      } else {
+        setMsg(err?.message || "Failed to save tip");
+      }
     } finally {
       setSaving(false);
     }
@@ -1198,6 +1225,10 @@ export default function App() {
   const [now, setNow] = useState(new Date());
   const [activeTab, setActiveTab] = useState("tips");
   const [syncing, setSyncing] = useState(false);
+  const [savingMySprint, setSavingMySprint] = useState(false);
+  const [savingMyRace, setSavingMyRace] = useState(false);
+  const [savingSprintResult, setSavingSprintResult] = useState(false);
+  const [savingRaceResult, setSavingRaceResult] = useState(false);
 
   async function loadAll(userIdOverride) {
     try {
@@ -1249,6 +1280,34 @@ export default function App() {
       }
     } catch (err) {
       setMsg(err?.message || "Load failed");
+    }
+  }
+
+  async function getAccessTokenOrThrow() {
+    const {
+      data: { session: currentSession }
+    } = await supabase.auth.getSession();
+
+    const accessToken = currentSession?.access_token;
+    if (!accessToken) {
+      throw new Error("Session expired. Please sign in again.");
+    }
+
+    return accessToken;
+  }
+
+  async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
@@ -1389,36 +1448,48 @@ export default function App() {
     if (!session?.user || !activeRound) return;
 
     try {
-      const payload = {
-        round_id: activeRound.id,
-        user_id: session.user.id,
-        result_type: resultType,
-        p1_driver_id: draft.p1_driver_id || null,
-        p2_driver_id: draft.p2_driver_id || null,
-        p3_driver_id: draft.p3_driver_id || null,
-        oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
-        updated_at: new Date().toISOString()
-      };
+      if (resultType === "sprint") setSavingMySprint(true);
+      if (resultType === "race") setSavingMyRace(true);
 
-      const savePromise = supabase
-        .from("tips")
-        .upsert(payload, { onConflict: "round_id,user_id,result_type" });
+      const accessToken = await getAccessTokenOrThrow();
 
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Save tip timed out. Please try again.")), 15000)
+      const response = await fetchWithTimeout(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/save-my-tip`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`
+          },
+          body: JSON.stringify({
+            round_id: activeRound.id,
+            result_type: resultType,
+            p1_driver_id: draft.p1_driver_id || null,
+            p2_driver_id: draft.p2_driver_id || null,
+            p3_driver_id: draft.p3_driver_id || null,
+            oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null
+          })
+        },
+        15000
       );
 
-      const saveResult = await Promise.race([savePromise, timeoutPromise]);
-      const { error } = saveResult;
+      const data = await response.json().catch(() => ({}));
 
-      if (error) {
-        throw error;
+      if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || "Failed to save tip");
       }
 
       setMsg(`${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved`);
       await loadAll(session.user.id);
     } catch (err) {
-      setMsg(err?.message || "Failed to save tip");
+      if (err?.name === "AbortError") {
+        setMsg("Save tip timed out. Please try again.");
+      } else {
+        setMsg(err?.message || "Failed to save tip");
+      }
+    } finally {
+      if (resultType === "sprint") setSavingMySprint(false);
+      if (resultType === "race") setSavingMyRace(false);
     }
   }
 
@@ -1426,38 +1497,48 @@ export default function App() {
     if (!profile?.is_admin || !activeRound) return;
 
     try {
-      const payload = {
-        round_id: activeRound.id,
-        result_type: resultType,
-        p1_driver_id: draft.p1_driver_id || null,
-        p2_driver_id: draft.p2_driver_id || null,
-        p3_driver_id: draft.p3_driver_id || null,
-        oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
-        source: "manual"
-      };
+      if (resultType === "sprint") setSavingSprintResult(true);
+      if (resultType === "race") setSavingRaceResult(true);
 
-      const savePromise = supabase
-        .from("results")
-        .upsert(payload, { onConflict: "round_id,result_type" });
+      const accessToken = await getAccessTokenOrThrow();
 
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Save result timed out. Please try again.")), 15000)
+      const response = await fetchWithTimeout(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-save-result`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`
+          },
+          body: JSON.stringify({
+            round_id: activeRound.id,
+            result_type: resultType,
+            p1_driver_id: draft.p1_driver_id || null,
+            p2_driver_id: draft.p2_driver_id || null,
+            p3_driver_id: draft.p3_driver_id || null,
+            oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null
+          })
+        },
+        15000
       );
 
-      const saveResultResponse = await Promise.race([savePromise, timeoutPromise]);
-      const { error } = saveResultResponse;
+      const data = await response.json().catch(() => ({}));
 
-      if (error) {
-        throw error;
+      if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || "Failed to save result");
       }
 
       setMsg(`${resultType === "sprint" ? "Sprint" : "Grand Prix"} result saved`);
-
-      if (session?.user?.id) {
-        await loadAll(session.user.id);
-      }
+      await loadAll(session.user.id);
     } catch (err) {
-      setMsg(err?.message || "Failed to save result");
+      if (err?.name === "AbortError") {
+        setMsg("Save result timed out. Please try again.");
+      } else {
+        setMsg(err?.message || "Failed to save result");
+      }
+    } finally {
+      if (resultType === "sprint") setSavingSprintResult(false);
+      if (resultType === "race") setSavingRaceResult(false);
     }
   }
 
@@ -1663,6 +1744,7 @@ export default function App() {
                 disabled={!roundStatus.sprintOpen}
                 onSave={() => saveTip("sprint", sprintDraft)}
                 saveLabel="Save sprint tip"
+                saving={savingMySprint}
               />
             ) : null}
 
@@ -1674,6 +1756,7 @@ export default function App() {
               disabled={!roundStatus.raceOpen}
               onSave={() => saveTip("race", raceDraft)}
               saveLabel="Save Grand Prix tip"
+              saving={savingMyRace}
             />
           </div>
         ) : null}
@@ -1791,6 +1874,7 @@ export default function App() {
                   onSave={() => saveResult("sprint", sprintResultDraft)}
                   saveLabel="Save sprint result"
                   adminMode={true}
+                  saving={savingSprintResult}
                 />
               ) : null}
 
@@ -1802,6 +1886,7 @@ export default function App() {
                 onSave={() => saveResult("race", raceResultDraft)}
                 saveLabel="Save grand prix result"
                 adminMode={true}
+                saving={savingRaceResult}
               />
             </div>
           </div>
