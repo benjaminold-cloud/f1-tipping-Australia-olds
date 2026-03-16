@@ -3,10 +3,18 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY
+  import.meta.env.VITE_SUPABASE_ANON_KEY,
+  {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true
+    }
+  }
 );
 
-const ROUND_STICKY_HOURS = 48;
+const ROUND_STAY_VISIBLE_HOURS = 48;
+const BACKGROUND_REFRESH_MS = 5 * 60 * 1000;
 
 const TEAM_META = {
   McLaren: {
@@ -80,6 +88,10 @@ function countdownText(targetDate, now) {
   return `${hours}h ${minutes}m ${seconds}s`;
 }
 
+function getRoundReferenceDate(round) {
+  return round?.race_start || round?.race_lock_at || round?.tips_close || null;
+}
+
 function getRoundStatus(round, now) {
   if (!round) {
     return {
@@ -104,7 +116,7 @@ function getRoundStatus(round, now) {
     };
   }
 
-  if (now < new Date(raceLock)) {
+  if (raceLock && now < new Date(raceLock)) {
     return {
       locked: false,
       nextLabel: "Grand Prix tips lock in",
@@ -123,27 +135,33 @@ function getRoundStatus(round, now) {
   };
 }
 
-function getStickyRound(rounds, now) {
+function getPreferredRound(rounds, now, currentRoundId) {
   if (!rounds?.length) return null;
 
-  const sortedRounds = [...rounds].sort((a, b) => a.round_number - b.round_number);
+  const sorted = [...rounds].sort((a, b) => a.round_number - b.round_number);
+  const current = currentRoundId
+    ? sorted.find((r) => String(r.id) === String(currentRoundId))
+    : null;
 
-  const stickyRound = sortedRounds.find((round) => {
-    if (!round?.race_start) return false;
-    const stickyUntil = new Date(round.race_start).getTime() + ROUND_STICKY_HOURS * 60 * 60 * 1000;
-    return now.getTime() <= stickyUntil;
+  if (current) return current;
+
+  const graceMs = ROUND_STAY_VISIBLE_HOURS * 60 * 60 * 1000;
+
+  const visibleRound = sorted.find((round) => {
+    const ref = getRoundReferenceDate(round);
+    if (!ref) return false;
+    return now.getTime() < new Date(ref).getTime() + graceMs;
   });
 
-  if (stickyRound) return stickyRound;
+  if (visibleRound) return visibleRound;
 
-  const nextUpcoming = sortedRounds.find((round) => {
-    const compareTime = round.race_start || round.race_lock_at || round.tips_close;
-    return compareTime && now.getTime() <= new Date(compareTime).getTime();
+  const upcomingRound = sorted.find((round) => {
+    const ref = getRoundReferenceDate(round);
+    if (!ref) return false;
+    return now.getTime() < new Date(ref).getTime();
   });
 
-  if (nextUpcoming) return nextUpcoming;
-
-  return sortedRounds[sortedRounds.length - 1] || null;
+  return upcomingRound || sorted[sorted.length - 1];
 }
 
 function scoreTip(tip, result, isSprint) {
@@ -377,7 +395,16 @@ function Toast({ toast, onClose }) {
   );
 }
 
-function TipForm({ title, draft, setDraft, drivers, disabled, onSave, saveLabel, saving = false }) {
+function TipForm({
+  title,
+  draft,
+  setDraft,
+  drivers,
+  disabled,
+  onSave,
+  saveLabel,
+  saving = false
+}) {
   return (
     <div style={styles.subCard}>
       <h3 style={styles.sectionTitle}>{title}</h3>
@@ -556,10 +583,7 @@ function TipsCard({ title, tips, profilesById, driverMap, result, isSprint }) {
                 <DriverLabel driverId={tip.p1_driver_id} driverMap={driverMap} size={16} />
               </div>
               {result ? (
-                <PickScoreTag
-                  state={breakdown.pickStates[0]}
-                  points={breakdown.pickScores[0]}
-                />
+                <PickScoreTag state={breakdown.pickStates[0]} points={breakdown.pickScores[0]} />
               ) : null}
             </div>
 
@@ -569,10 +593,7 @@ function TipsCard({ title, tips, profilesById, driverMap, result, isSprint }) {
                 <DriverLabel driverId={tip.p2_driver_id} driverMap={driverMap} size={16} />
               </div>
               {result ? (
-                <PickScoreTag
-                  state={breakdown.pickStates[1]}
-                  points={breakdown.pickScores[1]}
-                />
+                <PickScoreTag state={breakdown.pickStates[1]} points={breakdown.pickScores[1]} />
               ) : null}
             </div>
 
@@ -582,10 +603,7 @@ function TipsCard({ title, tips, profilesById, driverMap, result, isSprint }) {
                 <DriverLabel driverId={tip.p3_driver_id} driverMap={driverMap} size={16} />
               </div>
               {result ? (
-                <PickScoreTag
-                  state={breakdown.pickStates[2]}
-                  points={breakdown.pickScores[2]}
-                />
+                <PickScoreTag state={breakdown.pickStates[2]} points={breakdown.pickScores[2]} />
               ) : null}
             </div>
 
@@ -594,10 +612,7 @@ function TipsCard({ title, tips, profilesById, driverMap, result, isSprint }) {
                 <span style={styles.tipKey}>Oscar:</span> {tip.oscar_finish ?? "-"}
               </div>
               {result ? (
-                <PickScoreTag
-                  state={breakdown.oscarState}
-                  points={breakdown.oscarPoints}
-                />
+                <PickScoreTag state={breakdown.oscarState} points={breakdown.oscarPoints} />
               ) : null}
             </div>
 
@@ -681,7 +696,10 @@ function ProfilePanel({ session, profile, pushToast, reloadData }) {
       await reloadData();
 
       if (authChanged) {
-        pushToast("Profile updated. If you changed email, check your inbox for confirmation.", "success");
+        pushToast(
+          "Profile updated. If you changed email, check your inbox for confirmation.",
+          "success"
+        );
       } else if (updates.length) {
         pushToast(`Updated ${updates.join(", ")}`, "success");
       } else {
@@ -760,10 +778,7 @@ function AdminCreateUserPanel({ pushToast, reloadData }) {
       }
 
       const controller = new AbortController();
-
-      const timeoutId = setTimeout(() => {
-        controller.abort();
-      }, 15000);
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
 
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-create-user`,
@@ -787,11 +802,7 @@ function AdminCreateUserPanel({ pushToast, reloadData }) {
 
       const data = await response.json().catch(() => ({}));
 
-      if (!response.ok) {
-        throw new Error(data?.error || "Failed to create user");
-      }
-
-      if (!data?.ok) {
+      if (!response.ok || !data?.ok) {
         throw new Error(data?.error || "Failed to create user");
       }
 
@@ -1270,23 +1281,24 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("tips");
   const [syncing, setSyncing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [recoveringSession, setRecoveringSession] = useState(false);
   const [savingMySprint, setSavingMySprint] = useState(false);
   const [savingMyRace, setSavingMyRace] = useState(false);
   const [savingSprintResult, setSavingSprintResult] = useState(false);
   const [savingRaceResult, setSavingRaceResult] = useState(false);
   const [toast, setToast] = useState(null);
+
   const toastTimerRef = useRef(null);
   const resumeInFlightRef = useRef(false);
+  const lastHiddenAtRef = useRef(null);
 
   function pushToast(message, type = "info") {
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current);
-    }
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
 
     setToast({
+      id: Date.now(),
       message,
-      type,
-      id: Date.now()
+      type
     });
 
     toastTimerRef.current = setTimeout(() => {
@@ -1295,13 +1307,30 @@ export default function App() {
   }
 
   function clearToast() {
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current);
-    }
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast(null);
   }
 
-  async function loadAll(userIdOverride, { silent = false, preserveActiveRound = true } = {}) {
+  async function forceToLogin(message = "Session expired. Please sign in again.") {
+    try {
+      await supabase.auth.signOut({ scope: "local" });
+    } catch (_err) {
+      // ignore
+    }
+
+    setSession(null);
+    setProfile(null);
+    setProfiles([]);
+    setDrivers([]);
+    setRounds([]);
+    setTips([]);
+    setResults([]);
+    setActiveRoundId(null);
+    setMsg(message);
+    pushToast(message, "error");
+  }
+
+  async function loadAll(userIdOverride, { silent = false, keepCurrentRound = true } = {}) {
     try {
       const [
         { data: profilesData, error: profilesError },
@@ -1332,48 +1361,72 @@ export default function App() {
       const myProfile = (profilesData || []).find((p) => p.id === userId) || null;
       setProfile(myProfile);
 
-      const stickyRound = getStickyRound(roundsData || [], new Date());
+      const preferredRound = getPreferredRound(
+        roundsData || [],
+        new Date(),
+        keepCurrentRound ? activeRoundId : null
+      );
 
-      if (stickyRound) {
-        setActiveRoundId((prev) => {
-          if (preserveActiveRound && prev && (roundsData || []).some((r) => r.id === prev)) {
-            return prev;
-          }
-          return stickyRound.id;
-        });
-
-        const chosenRoundId =
-          preserveActiveRound && activeRoundId && (roundsData || []).some((r) => r.id === activeRoundId)
-            ? activeRoundId
-            : stickyRound.id;
-
-        const mySprintTip = (tipsData || []).find(
-          (t) => t.round_id === chosenRoundId && t.user_id === userId && t.result_type === "sprint"
-        );
-        const myRaceTip = (tipsData || []).find(
-          (t) => t.round_id === chosenRoundId && t.user_id === userId && t.result_type === "race"
-        );
-
-        setSprintDraft(mySprintTip || blankTip("sprint"));
-        setRaceDraft(myRaceTip || blankTip("race"));
+      if (preferredRound) {
+        setActiveRoundId(preferredRound.id);
       }
     } catch (err) {
       if (!silent) {
-        setMsg(err?.message || "Load failed");
-        pushToast(err?.message || "Load failed", "error");
+        const message = err?.message || "Load failed";
+        setMsg(message);
+        pushToast(message, "error");
       }
     }
   }
 
-  async function getAccessTokenOrThrow() {
-    const {
-      data: { session: currentSession }
-    } = await supabase.auth.getSession();
+  async function ensureFreshSession({ forceRefresh = false } = {}) {
+    setRecoveringSession(true);
 
-    const accessToken = currentSession?.access_token;
+    try {
+      let {
+        data: { session: currentSession }
+      } = await supabase.auth.getSession();
+
+      if (!currentSession) {
+        await forceToLogin("Session expired. Please sign in again.");
+        return null;
+      }
+
+      const expiresAtMs = currentSession.expires_at
+        ? currentSession.expires_at * 1000
+        : 0;
+
+      const msLeft = expiresAtMs - Date.now();
+      const shouldRefresh = forceRefresh || msLeft < 5 * 60 * 1000;
+
+      if (shouldRefresh) {
+        const { data, error } = await supabase.auth.refreshSession();
+
+        if (error || !data?.session) {
+          await forceToLogin("Session expired. Please sign in again.");
+          return null;
+        }
+
+        currentSession = data.session;
+        setSession(currentSession);
+      } else {
+        setSession(currentSession);
+      }
+
+      return currentSession;
+    } catch (_err) {
+      await forceToLogin("Session expired. Please sign in again.");
+      return null;
+    } finally {
+      setRecoveringSession(false);
+    }
+  }
+
+  async function getAccessTokenOrThrow() {
+    const freshSession = await ensureFreshSession({ forceRefresh: true });
+
+    const accessToken = freshSession?.access_token;
     if (!accessToken) {
-      setSession(null);
-      setProfile(null);
       throw new Error("Session expired. Please sign in again.");
     }
 
@@ -1401,38 +1454,21 @@ export default function App() {
     try {
       resumeInFlightRef.current = true;
 
-      const {
-        data: { session: resumedSession }
-      } = await supabase.auth.getSession();
+      const freshSession = await ensureFreshSession({ forceRefresh: true });
+      if (!freshSession?.user) return;
 
-      setSession(resumedSession || null);
+      await loadAll(freshSession.user.id, {
+        silent: true,
+        keepCurrentRound: true
+      });
 
-      if (!resumedSession?.user) {
-        setProfile(null);
-        setMsg("Session expired. Please sign in again.");
-        if (showToast) {
-          pushToast("Session expired. Please sign in again.", "error");
-        }
-        return;
-      }
-
-      await loadAll(resumedSession.user.id, { silent: true, preserveActiveRound: true });
       if (showToast) {
         pushToast("App refreshed", "success");
       }
     } catch (_err) {
-      pushToast("Could not refresh app state. Please try again.", "error");
+      await forceToLogin("Session expired. Please sign in again.");
     } finally {
       resumeInFlightRef.current = false;
-    }
-  }
-
-  async function manualRefresh() {
-    try {
-      setRefreshing(true);
-      await handleAppResume({ showToast: true });
-    } finally {
-      setRefreshing(false);
     }
   }
 
@@ -1445,7 +1481,7 @@ export default function App() {
     supabase.auth.getSession().then(async ({ data }) => {
       setSession(data.session);
       if (data.session?.user) {
-        await loadAll(data.session.user.id, { preserveActiveRound: false });
+        await loadAll(data.session.user.id, { keepCurrentRound: false });
       }
     });
 
@@ -1454,7 +1490,7 @@ export default function App() {
     } = supabase.auth.onAuthStateChange(async (_event, sess) => {
       setSession(sess);
       if (sess?.user) {
-        await loadAll(sess.user.id, { silent: true, preserveActiveRound: true });
+        await loadAll(sess.user.id, { silent: true, keepCurrentRound: true });
       } else {
         setProfile(null);
       }
@@ -1465,13 +1501,30 @@ export default function App() {
 
   useEffect(() => {
     async function onVisibilityChange() {
+      if (document.visibilityState === "hidden") {
+        lastHiddenAtRef.current = Date.now();
+        return;
+      }
+
       if (document.visibilityState === "visible") {
-        await handleAppResume();
+        const hiddenForMs = lastHiddenAtRef.current
+          ? Date.now() - lastHiddenAtRef.current
+          : 0;
+
+        if (hiddenForMs > 15000) {
+          await handleAppResume({ showToast: true });
+        }
       }
     }
 
     async function onWindowFocus() {
-      await handleAppResume();
+      const hiddenForMs = lastHiddenAtRef.current
+        ? Date.now() - lastHiddenAtRef.current
+        : 0;
+
+      if (hiddenForMs > 15000) {
+        await handleAppResume({ showToast: true });
+      }
     }
 
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -1481,7 +1534,17 @@ export default function App() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onWindowFocus);
     };
-  }, [session]);
+  }, []);
+
+  useEffect(() => {
+    if (!session?.user) return;
+
+    const timer = setInterval(() => {
+      handleAppResume();
+    }, BACKGROUND_REFRESH_MS);
+
+    return () => clearInterval(timer);
+  }, [session?.user]);
 
   const activeRound = useMemo(
     () => rounds.find((r) => r.id === activeRoundId) || null,
@@ -1561,15 +1624,34 @@ export default function App() {
   const leaderboard = useMemo(() => {
     const byUser = new Map();
 
+    const getTeamFromDriverId = (driverId) => driverMap.get(driverId)?.team || null;
+
     tips.forEach((tip) => {
       if (!byUser.has(tip.user_id)) {
         byUser.set(tip.user_id, {
           user_id: tip.user_id,
           name: profilesById.get(tip.user_id) || "Player",
           total: 0,
-          favoriteTeam: null
+          favoriteTeam: null,
+          teamCounts: {},
+          teamLatest: {}
         });
       }
+
+      const row = byUser.get(tip.user_id);
+      const tipTime = new Date(
+        tip.updated_at ||
+          getRoundReferenceDate(rounds.find((r) => r.id === tip.round_id)) ||
+          0
+      ).getTime();
+
+      [tip.p1_driver_id, tip.p2_driver_id, tip.p3_driver_id].forEach((driverId) => {
+        const team = getTeamFromDriverId(driverId);
+        if (!team) return;
+
+        row.teamCounts[team] = (row.teamCounts[team] || 0) + 1;
+        row.teamLatest[team] = Math.max(row.teamLatest[team] || 0, tipTime);
+      });
     });
 
     tips.forEach((tip) => {
@@ -1582,55 +1664,33 @@ export default function App() {
       row.total += scoreTip(tip, result, tip.result_type === "sprint");
     });
 
-    byUser.forEach((row, userId) => {
-      const userTips = tips
-        .filter((t) => t.user_id === userId)
-        .sort((a, b) => {
-          const aTime = new Date(a.updated_at || 0).getTime();
-          const bTime = new Date(b.updated_at || 0).getTime();
-          return aTime - bTime;
-        });
-
-      const teamCounts = new Map();
-
-      userTips.forEach((tip) => {
-        const pickedDriverIds = [tip.p1_driver_id, tip.p2_driver_id, tip.p3_driver_id].filter(Boolean);
-
-        pickedDriverIds.forEach((driverId) => {
-          const team = driverMap.get(driverId)?.team;
-          if (!team) return;
-
-          if (!teamCounts.has(team)) {
-            teamCounts.set(team, { count: 0, latestAt: 0 });
-          }
-
-          const current = teamCounts.get(team);
-          current.count += 1;
-          current.latestAt = new Date(tip.updated_at || 0).getTime();
-          teamCounts.set(team, current);
-        });
-      });
-
-      let bestTeam = null;
+    const rows = [...byUser.values()].map((row) => {
+      const teams = Object.keys(row.teamCounts || {});
+      let favoriteTeam = null;
       let bestCount = -1;
-      let bestLatestAt = -1;
+      let bestLatest = -1;
 
-      teamCounts.forEach((meta, team) => {
-        if (
-          meta.count > bestCount ||
-          (meta.count === bestCount && meta.latestAt > bestLatestAt)
-        ) {
-          bestTeam = team;
-          bestCount = meta.count;
-          bestLatestAt = meta.latestAt;
+      teams.forEach((team) => {
+        const count = row.teamCounts[team] || 0;
+        const latest = row.teamLatest[team] || 0;
+
+        if (count > bestCount || (count === bestCount && latest > bestLatest)) {
+          bestCount = count;
+          bestLatest = latest;
+          favoriteTeam = team;
         }
       });
 
-      row.favoriteTeam = bestTeam;
+      return {
+        user_id: row.user_id,
+        name: row.name,
+        total: row.total,
+        favoriteTeam
+      };
     });
 
-    return [...byUser.values()].sort((a, b) => b.total - a.total);
-  }, [tips, results, profilesById, driverMap]);
+    return rows.sort((a, b) => b.total - a.total);
+  }, [tips, results, profilesById, driverMap, rounds]);
 
   async function saveTip(resultType, draft) {
     if (!session?.user || !activeRound) return;
@@ -1670,7 +1730,7 @@ export default function App() {
       const successMessage = `${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved`;
       setMsg(successMessage);
       pushToast(successMessage, "success");
-      await loadAll(session.user.id, { silent: true, preserveActiveRound: true });
+      await loadAll(session.user.id, { silent: true, keepCurrentRound: true });
     } catch (err) {
       const message =
         err?.name === "AbortError"
@@ -1723,7 +1783,7 @@ export default function App() {
       const successMessage = `${resultType === "sprint" ? "Sprint" : "Grand Prix"} result saved`;
       setMsg(successMessage);
       pushToast(successMessage, "success");
-      await loadAll(session.user.id, { silent: true, preserveActiveRound: true });
+      await loadAll(session.user.id, { silent: true, keepCurrentRound: true });
     } catch (err) {
       const message =
         err?.name === "AbortError"
@@ -1746,19 +1806,25 @@ export default function App() {
       setMsg("Syncing results...");
       pushToast("Syncing results...", "info");
 
-      const syncPromise = supabase.functions.invoke("sync-results", {
-        body: {}
-      });
+      const accessToken = await getAccessTokenOrThrow();
 
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Sync timed out. Please try again.")), 20000)
+      const response = await fetchWithTimeout(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sync-results`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`
+          },
+          body: JSON.stringify({})
+        },
+        20000
       );
 
-      const syncResponse = await Promise.race([syncPromise, timeoutPromise]);
-      const { data, error } = syncResponse;
+      const data = await response.json().catch(() => ({}));
 
-      if (error) {
-        throw new Error(error.message || "Sync failed");
+      if (!response.ok) {
+        throw new Error(data?.error || "Sync failed");
       }
 
       const message =
@@ -1770,7 +1836,7 @@ export default function App() {
       pushToast(message, "success");
 
       if (session?.user?.id) {
-        await loadAll(session.user.id, { silent: true, preserveActiveRound: true });
+        await loadAll(session.user.id, { silent: true, keepCurrentRound: true });
       }
     } catch (err) {
       const message = err?.message || "Sync failed";
@@ -1819,17 +1885,28 @@ export default function App() {
             <h1 style={styles.pageTitle}>🏁 Olds F1 Tipping 2026</h1>
             <p style={styles.pageSub}>Sprint tips are half points. Grand Prix tips are full points.</p>
           </div>
+
           <div style={styles.headerActions}>
-            <button onClick={manualRefresh} style={styles.secondary} disabled={refreshing}>
-              {refreshing ? "Refreshing..." : "Refresh App"}
+            <button
+              onClick={() => handleAppResume({ showToast: true })}
+              style={styles.secondary}
+              disabled={refreshing || recoveringSession}
+            >
+              {refreshing || recoveringSession ? "Refreshing..." : "Refresh App"}
             </button>
+
+            <button onClick={() => window.location.reload()} style={styles.secondary}>
+              Hard Reload
+            </button>
+
             {profile?.is_admin ? (
-              <button onClick={syncResultsNow} style={styles.secondary} disabled={syncing}>
+              <button onClick={syncResultsNow} style={styles.secondary} disabled={syncing || recoveringSession}>
                 {syncing ? "Syncing..." : "Sync Results"}
               </button>
             ) : null}
-            <button onClick={signOut} style={styles.primary}>
-              Sign out
+
+            <button onClick={signOut} style={styles.primary} disabled={recoveringSession}>
+              {recoveringSession ? "Please wait..." : "Sign out"}
             </button>
           </div>
         </div>
@@ -1948,7 +2025,7 @@ export default function App() {
                 draft={sprintDraft}
                 setDraft={setSprintDraft}
                 drivers={drivers}
-                disabled={!roundStatus.sprintOpen}
+                disabled={!roundStatus.sprintOpen || recoveringSession}
                 onSave={() => saveTip("sprint", sprintDraft)}
                 saveLabel="Save sprint tip"
                 saving={savingMySprint}
@@ -1960,7 +2037,7 @@ export default function App() {
               draft={raceDraft}
               setDraft={setRaceDraft}
               drivers={drivers}
-              disabled={!roundStatus.raceOpen}
+              disabled={!roundStatus.raceOpen || recoveringSession}
               onSave={() => saveTip("race", raceDraft)}
               saveLabel="Save Grand Prix tip"
               saving={savingMyRace}
@@ -2044,7 +2121,7 @@ export default function App() {
             session={session}
             profile={profile}
             pushToast={pushToast}
-            reloadData={() => loadAll(session.user.id, { silent: true, preserveActiveRound: true })}
+            reloadData={() => loadAll(session.user.id, { silent: true, keepCurrentRound: true })}
           />
         ) : null}
 
@@ -2060,7 +2137,7 @@ export default function App() {
             <div style={styles.adminPanelWrap}>
               <AdminCreateUserPanel
                 pushToast={pushToast}
-                reloadData={() => loadAll(session.user.id, { silent: true, preserveActiveRound: true })}
+                reloadData={() => loadAll(session.user.id, { silent: true, keepCurrentRound: true })}
               />
 
               <AdminUserTipPanel
@@ -2069,7 +2146,7 @@ export default function App() {
                 drivers={drivers}
                 tips={tips}
                 pushToast={pushToast}
-                reloadData={() => loadAll(session.user.id, { silent: true, preserveActiveRound: true })}
+                reloadData={() => loadAll(session.user.id, { silent: true, keepCurrentRound: true })}
               />
 
               {activeRound?.is_sprint ? (
