@@ -6,6 +6,8 @@ const supabase = createClient(
   import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
+const ROUND_STICKY_HOURS = 48;
+
 const TEAM_META = {
   McLaren: {
     color: "#ff8000",
@@ -119,6 +121,29 @@ function getRoundStatus(round, now) {
     sprintOpen: false,
     raceOpen: false
   };
+}
+
+function getStickyRound(rounds, now) {
+  if (!rounds?.length) return null;
+
+  const sortedRounds = [...rounds].sort((a, b) => a.round_number - b.round_number);
+
+  const stickyRound = sortedRounds.find((round) => {
+    if (!round?.race_start) return false;
+    const stickyUntil = new Date(round.race_start).getTime() + ROUND_STICKY_HOURS * 60 * 60 * 1000;
+    return now.getTime() <= stickyUntil;
+  });
+
+  if (stickyRound) return stickyRound;
+
+  const nextUpcoming = sortedRounds.find((round) => {
+    const compareTime = round.race_start || round.race_lock_at || round.tips_close;
+    return compareTime && now.getTime() <= new Date(compareTime).getTime();
+  });
+
+  if (nextUpcoming) return nextUpcoming;
+
+  return sortedRounds[sortedRounds.length - 1] || null;
 }
 
 function scoreTip(tip, result, isSprint) {
@@ -1244,6 +1269,7 @@ export default function App() {
   const [now, setNow] = useState(new Date());
   const [activeTab, setActiveTab] = useState("tips");
   const [syncing, setSyncing] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [savingMySprint, setSavingMySprint] = useState(false);
   const [savingMyRace, setSavingMyRace] = useState(false);
   const [savingSprintResult, setSavingSprintResult] = useState(false);
@@ -1275,7 +1301,7 @@ export default function App() {
     setToast(null);
   }
 
-  async function loadAll(userIdOverride, { silent = false } = {}) {
+  async function loadAll(userIdOverride, { silent = false, preserveActiveRound = true } = {}) {
     try {
       const [
         { data: profilesData, error: profilesError },
@@ -1306,20 +1332,26 @@ export default function App() {
       const myProfile = (profilesData || []).find((p) => p.id === userId) || null;
       setProfile(myProfile);
 
-      const firstOpen =
-        (roundsData || []).find((r) => !getRoundStatus(r, new Date()).locked) ||
-        (roundsData || [])[0];
+      const stickyRound = getStickyRound(roundsData || [], new Date());
 
-      if (firstOpen) {
-        setActiveRoundId((prev) => prev || firstOpen.id);
+      if (stickyRound) {
+        setActiveRoundId((prev) => {
+          if (preserveActiveRound && prev && (roundsData || []).some((r) => r.id === prev)) {
+            return prev;
+          }
+          return stickyRound.id;
+        });
 
-        const roundToUse = activeRoundId || firstOpen.id;
+        const chosenRoundId =
+          preserveActiveRound && activeRoundId && (roundsData || []).some((r) => r.id === activeRoundId)
+            ? activeRoundId
+            : stickyRound.id;
 
         const mySprintTip = (tipsData || []).find(
-          (t) => t.round_id === roundToUse && t.user_id === userId && t.result_type === "sprint"
+          (t) => t.round_id === chosenRoundId && t.user_id === userId && t.result_type === "sprint"
         );
         const myRaceTip = (tipsData || []).find(
-          (t) => t.round_id === roundToUse && t.user_id === userId && t.result_type === "race"
+          (t) => t.round_id === chosenRoundId && t.user_id === userId && t.result_type === "race"
         );
 
         setSprintDraft(mySprintTip || blankTip("sprint"));
@@ -1340,6 +1372,8 @@ export default function App() {
 
     const accessToken = currentSession?.access_token;
     if (!accessToken) {
+      setSession(null);
+      setProfile(null);
       throw new Error("Session expired. Please sign in again.");
     }
 
@@ -1361,7 +1395,7 @@ export default function App() {
     }
   }
 
-  async function handleAppResume() {
+  async function handleAppResume({ showToast = false } = {}) {
     if (resumeInFlightRef.current) return;
 
     try {
@@ -1375,15 +1409,30 @@ export default function App() {
 
       if (!resumedSession?.user) {
         setProfile(null);
-        pushToast("Session expired. Please sign in again.", "error");
+        setMsg("Session expired. Please sign in again.");
+        if (showToast) {
+          pushToast("Session expired. Please sign in again.", "error");
+        }
         return;
       }
 
-      await loadAll(resumedSession.user.id, { silent: true });
+      await loadAll(resumedSession.user.id, { silent: true, preserveActiveRound: true });
+      if (showToast) {
+        pushToast("App refreshed", "success");
+      }
     } catch (_err) {
       pushToast("Could not refresh app state. Please try again.", "error");
     } finally {
       resumeInFlightRef.current = false;
+    }
+  }
+
+  async function manualRefresh() {
+    try {
+      setRefreshing(true);
+      await handleAppResume({ showToast: true });
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -1396,7 +1445,7 @@ export default function App() {
     supabase.auth.getSession().then(async ({ data }) => {
       setSession(data.session);
       if (data.session?.user) {
-        await loadAll(data.session.user.id);
+        await loadAll(data.session.user.id, { preserveActiveRound: false });
       }
     });
 
@@ -1405,7 +1454,7 @@ export default function App() {
     } = supabase.auth.onAuthStateChange(async (_event, sess) => {
       setSession(sess);
       if (sess?.user) {
-        await loadAll(sess.user.id, { silent: true });
+        await loadAll(sess.user.id, { silent: true, preserveActiveRound: true });
       } else {
         setProfile(null);
       }
@@ -1531,10 +1580,53 @@ export default function App() {
       if (!row) return;
 
       row.total += scoreTip(tip, result, tip.result_type === "sprint");
+    });
 
-      if (!row.favoriteTeam && tip.p1_driver_id) {
-        row.favoriteTeam = driverMap.get(tip.p1_driver_id)?.team || null;
-      }
+    byUser.forEach((row, userId) => {
+      const userTips = tips
+        .filter((t) => t.user_id === userId)
+        .sort((a, b) => {
+          const aTime = new Date(a.updated_at || 0).getTime();
+          const bTime = new Date(b.updated_at || 0).getTime();
+          return aTime - bTime;
+        });
+
+      const teamCounts = new Map();
+
+      userTips.forEach((tip) => {
+        const pickedDriverIds = [tip.p1_driver_id, tip.p2_driver_id, tip.p3_driver_id].filter(Boolean);
+
+        pickedDriverIds.forEach((driverId) => {
+          const team = driverMap.get(driverId)?.team;
+          if (!team) return;
+
+          if (!teamCounts.has(team)) {
+            teamCounts.set(team, { count: 0, latestAt: 0 });
+          }
+
+          const current = teamCounts.get(team);
+          current.count += 1;
+          current.latestAt = new Date(tip.updated_at || 0).getTime();
+          teamCounts.set(team, current);
+        });
+      });
+
+      let bestTeam = null;
+      let bestCount = -1;
+      let bestLatestAt = -1;
+
+      teamCounts.forEach((meta, team) => {
+        if (
+          meta.count > bestCount ||
+          (meta.count === bestCount && meta.latestAt > bestLatestAt)
+        ) {
+          bestTeam = team;
+          bestCount = meta.count;
+          bestLatestAt = meta.latestAt;
+        }
+      });
+
+      row.favoriteTeam = bestTeam;
     });
 
     return [...byUser.values()].sort((a, b) => b.total - a.total);
@@ -1578,7 +1670,7 @@ export default function App() {
       const successMessage = `${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved`;
       setMsg(successMessage);
       pushToast(successMessage, "success");
-      await loadAll(session.user.id, { silent: true });
+      await loadAll(session.user.id, { silent: true, preserveActiveRound: true });
     } catch (err) {
       const message =
         err?.name === "AbortError"
@@ -1631,7 +1723,7 @@ export default function App() {
       const successMessage = `${resultType === "sprint" ? "Sprint" : "Grand Prix"} result saved`;
       setMsg(successMessage);
       pushToast(successMessage, "success");
-      await loadAll(session.user.id, { silent: true });
+      await loadAll(session.user.id, { silent: true, preserveActiveRound: true });
     } catch (err) {
       const message =
         err?.name === "AbortError"
@@ -1678,7 +1770,7 @@ export default function App() {
       pushToast(message, "success");
 
       if (session?.user?.id) {
-        await loadAll(session.user.id, { silent: true });
+        await loadAll(session.user.id, { silent: true, preserveActiveRound: true });
       }
     } catch (err) {
       const message = err?.message || "Sync failed";
@@ -1728,6 +1820,9 @@ export default function App() {
             <p style={styles.pageSub}>Sprint tips are half points. Grand Prix tips are full points.</p>
           </div>
           <div style={styles.headerActions}>
+            <button onClick={manualRefresh} style={styles.secondary} disabled={refreshing}>
+              {refreshing ? "Refreshing..." : "Refresh App"}
+            </button>
             {profile?.is_admin ? (
               <button onClick={syncResultsNow} style={styles.secondary} disabled={syncing}>
                 {syncing ? "Syncing..." : "Sync Results"}
@@ -1949,7 +2044,7 @@ export default function App() {
             session={session}
             profile={profile}
             pushToast={pushToast}
-            reloadData={() => loadAll(session.user.id, { silent: true })}
+            reloadData={() => loadAll(session.user.id, { silent: true, preserveActiveRound: true })}
           />
         ) : null}
 
@@ -1965,7 +2060,7 @@ export default function App() {
             <div style={styles.adminPanelWrap}>
               <AdminCreateUserPanel
                 pushToast={pushToast}
-                reloadData={() => loadAll(session.user.id, { silent: true })}
+                reloadData={() => loadAll(session.user.id, { silent: true, preserveActiveRound: true })}
               />
 
               <AdminUserTipPanel
@@ -1974,7 +2069,7 @@ export default function App() {
                 drivers={drivers}
                 tips={tips}
                 pushToast={pushToast}
-                reloadData={() => loadAll(session.user.id, { silent: true })}
+                reloadData={() => loadAll(session.user.id, { silent: true, preserveActiveRound: true })}
               />
 
               {activeRound?.is_sprint ? (
