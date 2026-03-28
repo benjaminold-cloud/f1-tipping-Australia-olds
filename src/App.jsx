@@ -14,7 +14,6 @@ const supabase = createClient(
 );
 
 const ROUND_STAY_VISIBLE_HOURS = 48;
-const BACKGROUND_REFRESH_MS = 5 * 60 * 1000;
 
 const TEAM_META = {
   McLaren: {
@@ -70,6 +69,18 @@ const TEAM_META = {
 function fmt(dateStr) {
   if (!dateStr) return "TBC";
   return new Date(dateStr).toLocaleString();
+}
+
+function fmtRelative(dateStr) {
+  if (!dateStr) return "";
+  const then = new Date(dateStr).getTime();
+  const now = Date.now();
+  const diffSec = Math.floor((now - then) / 1000);
+
+  if (diffSec < 60) return "just now";
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+  return `${Math.floor(diffSec / 86400)}d ago`;
 }
 
 function countdownText(targetDate, now) {
@@ -626,6 +637,108 @@ function TipsCard({ title, tips, profilesById, driverMap, result, isSprint }) {
   );
 }
 
+function NewsPanel({ items, loading, error, onReload }) {
+  return (
+    <div style={styles.card}>
+      <div style={styles.cardHeaderRow}>
+        <h2 style={styles.sectionTitle}>Latest F1 News</h2>
+        <button style={styles.secondary} onClick={onReload} disabled={loading}>
+          {loading ? "Loading..." : "Reload News"}
+        </button>
+      </div>
+
+      {error ? <div style={styles.notice}>{error}</div> : null}
+
+      {!loading && !items.length ? (
+        <p style={styles.mutedText}>No news yet. Add the `f1-news` edge function to power this tab.</p>
+      ) : null}
+
+      <div style={styles.stack}>
+        {items.map((item, idx) => (
+          <a
+            key={`${item.link}-${idx}`}
+            href={item.link}
+            target="_blank"
+            rel="noreferrer"
+            style={styles.newsCard}
+          >
+            <div style={styles.newsSourceRow}>
+              <span style={styles.newsSource}>{item.source || "F1 News"}</span>
+              <span style={styles.newsTime}>{fmtRelative(item.published_at)}</span>
+            </div>
+            <div style={styles.newsTitle}>{item.title}</div>
+            {item.summary ? <div style={styles.newsSummary}>{item.summary}</div> : null}
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ChatPanel({
+  session,
+  profile,
+  messages,
+  loading,
+  error,
+  sending,
+  draftMessage,
+  setDraftMessage,
+  onSend
+}) {
+  return (
+    <div style={styles.card}>
+      <div style={styles.cardHeaderRow}>
+        <h2 style={styles.sectionTitle}>Chat</h2>
+        <span style={styles.badgePending}>
+          {profile?.display_name || session?.user?.email || "Player"}
+        </span>
+      </div>
+
+      {error ? <div style={styles.notice}>{error}</div> : null}
+
+      <div style={styles.chatFeed}>
+        {loading ? <p style={styles.mutedText}>Loading chat…</p> : null}
+        {!loading && !messages.length ? (
+          <p style={styles.mutedText}>
+            No messages yet. Create the `chat_messages` table to power this tab.
+          </p>
+        ) : null}
+
+        {messages.map((msg) => (
+          <div
+            key={msg.id}
+            style={{
+              ...styles.chatMessage,
+              ...(msg.user_id === session?.user?.id ? styles.chatMessageMine : styles.chatMessageOther)
+            }}
+          >
+            <div style={styles.chatMeta}>
+              <strong>{msg.display_name || "Player"}</strong>
+              <span>{fmtRelative(msg.created_at)}</span>
+            </div>
+            <div style={styles.chatText}>{msg.message}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={styles.chatComposer}>
+        <textarea
+          style={styles.chatInput}
+          value={draftMessage}
+          onChange={(e) => setDraftMessage(e.target.value)}
+          placeholder="Write a message…"
+          rows={3}
+          disabled={sending}
+        />
+        <button style={styles.primary} onClick={onSend} disabled={sending || !draftMessage.trim()}>
+          {sending ? "Sending..." : "Send"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ProfilePanel({ session, profile, pushToast, reloadData }) {
   const [displayName, setDisplayName] = useState(profile?.display_name || "");
   const [email, setEmail] = useState(session?.user?.email || "");
@@ -1129,7 +1242,7 @@ function Auth({ onReady }) {
     }
 
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: "https://f1-tipping-australia-olds.vercel.app"
+      redirectTo: window.location.origin
     });
 
     if (error) setMsg(error.message);
@@ -1280,13 +1393,22 @@ export default function App() {
   const [now, setNow] = useState(new Date());
   const [activeTab, setActiveTab] = useState("tips");
   const [syncing, setSyncing] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [recoveringSession, setRecoveringSession] = useState(false);
   const [savingMySprint, setSavingMySprint] = useState(false);
   const [savingMyRace, setSavingMyRace] = useState(false);
   const [savingSprintResult, setSavingSprintResult] = useState(false);
   const [savingRaceResult, setSavingRaceResult] = useState(false);
   const [toast, setToast] = useState(null);
+
+  const [newsItems, setNewsItems] = useState([]);
+  const [loadingNews, setLoadingNews] = useState(false);
+  const [newsError, setNewsError] = useState("");
+
+  const [chatMessages, setChatMessages] = useState([]);
+  const [loadingChat, setLoadingChat] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [chatDraft, setChatDraft] = useState("");
+  const [sendingChat, setSendingChat] = useState(false);
 
   const toastTimerRef = useRef(null);
   const resumeInFlightRef = useRef(false);
@@ -1330,39 +1452,60 @@ export default function App() {
     pushToast(message, "error");
   }
 
+  async function withTimeout(promise, ms, timeoutMessage) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(timeoutMessage)), ms))
+    ]);
+  }
+
   async function loadAll(userIdOverride, { silent = false, keepCurrentRound = true } = {}) {
     try {
       const [
-        { data: profilesData, error: profilesError },
-        { data: driversData, error: driversError },
-        { data: roundsData, error: roundsError },
-        { data: tipsData, error: tipsError },
-        { data: resultsData, error: resultsError }
-      ] = await Promise.all([
-        supabase.from("profiles").select("id, display_name, is_admin").order("display_name"),
-        supabase.from("drivers").select("*").order("name"),
-        supabase.from("rounds").select("*").eq("season", 2026).order("round_number"),
-        supabase.from("tips").select("*"),
-        supabase.from("results").select("*")
-      ]);
+        profilesRes,
+        driversRes,
+        roundsRes,
+        tipsRes,
+        resultsRes
+      ] = await withTimeout(
+        Promise.all([
+          supabase.from("profiles").select("id, display_name, is_admin").order("display_name"),
+          supabase.from("drivers").select("*").order("name"),
+          supabase.from("rounds").select("*").eq("season", 2026).order("round_number"),
+          supabase.from("tips").select("*"),
+          supabase.from("results").select("*")
+        ]),
+        15000,
+        "Loading app data timed out. Tap Reload App."
+      );
 
       const firstError =
-        profilesError || driversError || roundsError || tipsError || resultsError;
+        profilesRes.error ||
+        driversRes.error ||
+        roundsRes.error ||
+        tipsRes.error ||
+        resultsRes.error;
 
       if (firstError) throw firstError;
 
-      setProfiles(profilesData || []);
-      setDrivers(driversData || []);
-      setRounds(roundsData || []);
-      setTips(tipsData || []);
-      setResults(resultsData || []);
+      const profilesData = profilesRes.data || [];
+      const driversData = driversRes.data || [];
+      const roundsData = roundsRes.data || [];
+      const tipsData = tipsRes.data || [];
+      const resultsData = resultsRes.data || [];
+
+      setProfiles(profilesData);
+      setDrivers(driversData);
+      setRounds(roundsData);
+      setTips(tipsData);
+      setResults(resultsData);
 
       const userId = userIdOverride || session?.user?.id;
-      const myProfile = (profilesData || []).find((p) => p.id === userId) || null;
+      const myProfile = profilesData.find((p) => p.id === userId) || null;
       setProfile(myProfile);
 
       const preferredRound = getPreferredRound(
-        roundsData || [],
+        roundsData,
         new Date(),
         keepCurrentRound ? activeRoundId : null
       );
@@ -1448,7 +1591,7 @@ export default function App() {
     }
   }
 
-  async function handleAppResume({ showToast = false } = {}) {
+  async function handleReloadApp({ showToast = false } = {}) {
     if (resumeInFlightRef.current) return;
 
     try {
@@ -1469,6 +1612,102 @@ export default function App() {
       await forceToLogin("Session expired. Please sign in again.");
     } finally {
       resumeInFlightRef.current = false;
+    }
+  }
+
+  async function loadNews() {
+    try {
+      setLoadingNews(true);
+      setNewsError("");
+
+      const accessToken = await getAccessTokenOrThrow();
+
+      const response = await fetchWithTimeout(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/f1-news`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`
+          },
+          body: JSON.stringify({})
+        },
+        15000
+      );
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data?.error || "News feed is not set up yet.");
+      }
+
+      setNewsItems(Array.isArray(data?.items) ? data.items : []);
+    } catch (err) {
+      setNewsError(err?.message || "Could not load news.");
+      setNewsItems([]);
+    } finally {
+      setLoadingNews(false);
+    }
+  }
+
+  async function loadChat() {
+    try {
+      setLoadingChat(true);
+      setChatError("");
+
+      const { data, error } = await withTimeout(
+        supabase
+          .from("chat_messages")
+          .select("id, user_id, message, created_at")
+          .order("created_at", { ascending: true })
+          .limit(100),
+        12000,
+        "Chat load timed out."
+      );
+
+      if (error) throw error;
+
+      const enriched = (data || []).map((row) => ({
+        ...row,
+        display_name: profiles.find((p) => p.id === row.user_id)?.display_name || "Player"
+      }));
+
+      setChatMessages(enriched);
+    } catch (err) {
+      setChatError(err?.message || "Chat is not set up yet.");
+      setChatMessages([]);
+    } finally {
+      setLoadingChat(false);
+    }
+  }
+
+  async function sendChatMessage() {
+    try {
+      const message = chatDraft.trim();
+      if (!message) return;
+
+      setSendingChat(true);
+      const freshSession = await ensureFreshSession({ forceRefresh: true });
+      if (!freshSession?.user) return;
+
+      const { error } = await withTimeout(
+        supabase.from("chat_messages").insert({
+          user_id: freshSession.user.id,
+          message
+        }),
+        12000,
+        "Send message timed out."
+      );
+
+      if (error) throw error;
+
+      setChatDraft("");
+      pushToast("Message sent", "success");
+      await loadChat();
+    } catch (err) {
+      pushToast(err?.message || "Could not send message", "error");
+    } finally {
+      setSendingChat(false);
     }
   }
 
@@ -1512,7 +1751,7 @@ export default function App() {
           : 0;
 
         if (hiddenForMs > 15000) {
-          await handleAppResume({ showToast: true });
+          window.location.reload();
         }
       }
     }
@@ -1523,7 +1762,7 @@ export default function App() {
         : 0;
 
       if (hiddenForMs > 15000) {
-        await handleAppResume({ showToast: true });
+        window.location.reload();
       }
     }
 
@@ -1539,12 +1778,46 @@ export default function App() {
   useEffect(() => {
     if (!session?.user) return;
 
-    const timer = setInterval(() => {
-      handleAppResume();
-    }, BACKGROUND_REFRESH_MS);
+    if (activeTab === "news") {
+      loadNews();
+    }
+    if (activeTab === "chat") {
+      loadChat();
+    }
+  }, [activeTab, session?.user]);
 
-    return () => clearInterval(timer);
-  }, [session?.user]);
+  useEffect(() => {
+    if (!session?.user) return;
+
+    let channel;
+
+    async function setupChatRealtime() {
+      try {
+        channel = supabase
+          .channel("chat-messages-live")
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "chat_messages" },
+            async () => {
+              await loadChat();
+            }
+          )
+          .subscribe();
+      } catch (_err) {
+        // ignore
+      }
+    }
+
+    if (activeTab === "chat") {
+      setupChatRealtime();
+    }
+
+    return () => {
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
+    };
+  }, [activeTab, session?.user, profiles]);
 
   const activeRound = useMemo(
     () => rounds.find((r) => r.id === activeRoundId) || null,
@@ -1734,7 +2007,7 @@ export default function App() {
     } catch (err) {
       const message =
         err?.name === "AbortError"
-          ? "Save tip timed out. Please try again."
+          ? "Save tip timed out. Session may be stale. Tap Reload App."
           : err?.message || "Failed to save tip";
 
       setMsg(message);
@@ -1787,7 +2060,7 @@ export default function App() {
     } catch (err) {
       const message =
         err?.name === "AbortError"
-          ? "Save result timed out. Please try again."
+          ? "Save result timed out. Session may be stale. Tap Reload App."
           : err?.message || "Failed to save result";
 
       setMsg(message);
@@ -1852,7 +2125,7 @@ export default function App() {
       const signOutPromise = supabase.auth.signOut();
 
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Sign out timed out. Please close and reopen the app.")), 10000)
+        setTimeout(() => reject(new Error("Sign out timed out. Please tap Reload App.")), 10000)
       );
 
       await Promise.race([signOutPromise, timeoutPromise]);
@@ -1887,20 +2160,16 @@ export default function App() {
           </div>
 
           <div style={styles.headerActions}>
-            <button
-              onClick={() => handleAppResume({ showToast: true })}
-              style={styles.secondary}
-              disabled={refreshing || recoveringSession}
-            >
-              {refreshing || recoveringSession ? "Refreshing..." : "Refresh App"}
-            </button>
-
             <button onClick={() => window.location.reload()} style={styles.secondary}>
-              Hard Reload
+              Reload App
             </button>
 
             {profile?.is_admin ? (
-              <button onClick={syncResultsNow} style={styles.secondary} disabled={syncing || recoveringSession}>
+              <button
+                onClick={syncResultsNow}
+                style={styles.secondary}
+                disabled={syncing || recoveringSession}
+              >
                 {syncing ? "Syncing..." : "Sync Results"}
               </button>
             ) : null}
@@ -1998,6 +2267,20 @@ export default function App() {
             onClick={() => setActiveTab("picks")}
           >
             Round Picks
+          </button>
+          <button
+            type="button"
+            style={activeTab === "news" ? styles.activeTabButton : styles.tabButton}
+            onClick={() => setActiveTab("news")}
+          >
+            News
+          </button>
+          <button
+            type="button"
+            style={activeTab === "chat" ? styles.activeTabButton : styles.tabButton}
+            onClick={() => setActiveTab("chat")}
+          >
+            Chat
           </button>
           <button
             type="button"
@@ -2116,6 +2399,29 @@ export default function App() {
           </div>
         ) : null}
 
+        {activeTab === "news" ? (
+          <NewsPanel
+            items={newsItems}
+            loading={loadingNews}
+            error={newsError}
+            onReload={loadNews}
+          />
+        ) : null}
+
+        {activeTab === "chat" ? (
+          <ChatPanel
+            session={session}
+            profile={profile}
+            messages={chatMessages}
+            loading={loadingChat}
+            error={chatError}
+            sending={sendingChat}
+            draftMessage={chatDraft}
+            setDraftMessage={setChatDraft}
+            onSend={sendChatMessage}
+          />
+        ) : null}
+
         {activeTab === "profile" ? (
           <ProfilePanel
             session={session}
@@ -2191,7 +2497,7 @@ const styles = {
     fontFamily: "Arial, sans-serif"
   },
   appWrap: {
-    maxWidth: 900,
+    maxWidth: 980,
     margin: "0 auto"
   },
   authWrap: {
@@ -2584,5 +2890,80 @@ const styles = {
     cursor: "pointer",
     padding: 0,
     marginTop: -2
+  },
+  newsCard: {
+    display: "block",
+    textDecoration: "none",
+    background: "#11151c",
+    border: "1px solid #2a2f3a",
+    borderRadius: 14,
+    padding: 14,
+    color: "white"
+  },
+  newsSourceRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 8,
+    color: "#9ca3af",
+    fontSize: 12
+  },
+  newsSource: {
+    fontWeight: 700
+  },
+  newsTime: {},
+  newsTitle: {
+    fontWeight: 700,
+    marginBottom: 8,
+    lineHeight: 1.4
+  },
+  newsSummary: {
+    color: "#d1d5db",
+    fontSize: 14,
+    lineHeight: 1.5
+  },
+  chatFeed: {
+    display: "grid",
+    gap: 10,
+    maxHeight: 420,
+    overflowY: "auto",
+    marginBottom: 16
+  },
+  chatMessage: {
+    borderRadius: 14,
+    padding: 12,
+    border: "1px solid #2a2f3a"
+  },
+  chatMessageMine: {
+    background: "#182332"
+  },
+  chatMessageOther: {
+    background: "#11151c"
+  },
+  chatMeta: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    marginBottom: 6,
+    fontSize: 12,
+    color: "#9ca3af"
+  },
+  chatText: {
+    lineHeight: 1.5,
+    whiteSpace: "pre-wrap"
+  },
+  chatComposer: {
+    display: "grid",
+    gap: 10
+  },
+  chatInput: {
+    width: "100%",
+    padding: 12,
+    borderRadius: 10,
+    border: "1px solid #333",
+    background: "#0f1115",
+    color: "white",
+    boxSizing: "border-box",
+    resize: "vertical"
   }
 };
