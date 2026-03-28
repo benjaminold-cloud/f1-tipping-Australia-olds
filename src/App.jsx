@@ -14,6 +14,7 @@ const supabase = createClient(
 );
 
 const ROUND_STAY_VISIBLE_HOURS = 48;
+const APP_RESUME_RELOAD_MS = 15000;
 
 const TEAM_META = {
   McLaren: {
@@ -650,7 +651,9 @@ function NewsPanel({ items, loading, error, onReload }) {
       {error ? <div style={styles.notice}>{error}</div> : null}
 
       {!loading && !items.length ? (
-        <p style={styles.mutedText}>No news yet. Add the `f1-news` edge function to power this tab.</p>
+        <p style={styles.mutedText}>
+          No news yet. Add the `f1-news` edge function to power this tab.
+        </p>
       ) : null}
 
       <div style={styles.stack}>
@@ -761,46 +764,42 @@ function ProfilePanel({ session, profile, pushToast, reloadData }) {
       let authChanged = false;
 
       if (displayName !== (profile?.display_name || "")) {
-        const profilePromise = supabase
-          .from("profiles")
-          .update({ display_name: displayName })
-          .eq("id", session.user.id);
+        const profileResult = await Promise.race([
+          supabase
+            .from("profiles")
+            .update({ display_name: displayName })
+            .eq("id", session.user.id),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Profile update timed out. Please try again.")), 15000)
+          )
+        ]);
 
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Profile update timed out. Please try again.")), 15000)
-        );
-
-        const profileResult = await Promise.race([profilePromise, timeoutPromise]);
-        const { error } = profileResult;
-
-        if (error) throw error;
+        if (profileResult.error) throw profileResult.error;
         updates.push("name");
       }
 
       if (email && email !== (session?.user?.email || "")) {
-        const emailPromise = supabase.auth.updateUser({ email });
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Email update timed out. Please try again.")), 15000)
-        );
+        const emailResult = await Promise.race([
+          supabase.auth.updateUser({ email }),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Email update timed out. Please try again.")), 15000)
+          )
+        ]);
 
-        const emailResult = await Promise.race([emailPromise, timeoutPromise]);
-        const { error } = emailResult;
-
-        if (error) throw error;
+        if (emailResult.error) throw emailResult.error;
         updates.push("email");
         authChanged = true;
       }
 
       if (password) {
-        const passwordPromise = supabase.auth.updateUser({ password });
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Password update timed out. Please try again.")), 15000)
-        );
+        const passwordResult = await Promise.race([
+          supabase.auth.updateUser({ password }),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Password update timed out. Please try again.")), 15000)
+          )
+        ]);
 
-        const passwordResult = await Promise.race([passwordPromise, timeoutPromise]);
-        const { error } = passwordResult;
-
-        if (error) throw error;
+        if (passwordResult.error) throw passwordResult.error;
         updates.push("password");
         authChanged = true;
         setPassword("");
@@ -1092,46 +1091,27 @@ function AdminUserTipPanel({
         throw new Error("Select a round and player");
       }
 
-      const {
-        data: { session }
-      } = await supabase.auth.getSession();
+      const payload = {
+        round_id: Number(roundId),
+        user_id: userId,
+        result_type: resultType,
+        p1_driver_id: draft.p1_driver_id || null,
+        p2_driver_id: draft.p2_driver_id || null,
+        p3_driver_id: draft.p3_driver_id || null,
+        oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
+        updated_at: new Date().toISOString()
+      };
 
-      const accessToken = session?.access_token;
-      if (!accessToken) {
-        throw new Error("Session expired. Please sign in again.");
-      }
+      const result = await Promise.race([
+        supabase
+          .from("tips")
+          .upsert(payload, { onConflict: "round_id,user_id,result_type" }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Save tip timed out. Tap Reload App.")), 15000)
+        )
+      ]);
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-save-tip`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`
-          },
-          body: JSON.stringify({
-            round_id: Number(roundId),
-            user_id: userId,
-            result_type: resultType,
-            p1_driver_id: draft.p1_driver_id || null,
-            p2_driver_id: draft.p2_driver_id || null,
-            p3_driver_id: draft.p3_driver_id || null,
-            oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null
-          }),
-          signal: controller.signal
-        }
-      );
-
-      clearTimeout(timeoutId);
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || "Failed to save tip");
-      }
+      if (result.error) throw result.error;
 
       pushToast(
         `${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved for ${
@@ -1142,11 +1122,7 @@ function AdminUserTipPanel({
 
       await reloadData();
     } catch (err) {
-      if (err?.name === "AbortError") {
-        pushToast("Save tip timed out. Please try again.", "error");
-      } else {
-        pushToast(err?.message || "Failed to save tip", "error");
-      }
+      pushToast(err?.message || "Failed to save tip", "error");
     } finally {
       setSaving(false);
     }
@@ -1411,7 +1387,6 @@ export default function App() {
   const [sendingChat, setSendingChat] = useState(false);
 
   const toastTimerRef = useRef(null);
-  const resumeInFlightRef = useRef(false);
   const lastHiddenAtRef = useRef(null);
 
   function pushToast(message, type = "info") {
@@ -1452,22 +1427,9 @@ export default function App() {
     pushToast(message, "error");
   }
 
-  async function withTimeout(promise, ms, timeoutMessage) {
-    return Promise.race([
-      promise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error(timeoutMessage)), ms))
-    ]);
-  }
-
   async function loadAll(userIdOverride, { silent = false, keepCurrentRound = true } = {}) {
     try {
-      const [
-        profilesRes,
-        driversRes,
-        roundsRes,
-        tipsRes,
-        resultsRes
-      ] = await withTimeout(
+      const [profilesRes, driversRes, roundsRes, tipsRes, resultsRes] = await Promise.race([
         Promise.all([
           supabase.from("profiles").select("id, display_name, is_admin").order("display_name"),
           supabase.from("drivers").select("*").order("name"),
@@ -1475,9 +1437,10 @@ export default function App() {
           supabase.from("tips").select("*"),
           supabase.from("results").select("*")
         ]),
-        15000,
-        "Loading app data timed out. Tap Reload App."
-      );
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Loading app data timed out. Tap Reload App.")), 15000)
+        )
+      ]);
 
       const firstError =
         profilesRes.error ||
@@ -1565,75 +1528,31 @@ export default function App() {
     }
   }
 
-  async function getAccessTokenOrThrow() {
-    const freshSession = await ensureFreshSession({ forceRefresh: true });
-
-    const accessToken = freshSession?.access_token;
-    if (!accessToken) {
-      throw new Error("Session expired. Please sign in again.");
-    }
-
-    return accessToken;
-  }
-
-  async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal
-      });
-      return response;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
-
-  async function handleReloadApp({ showToast = false } = {}) {
-    if (resumeInFlightRef.current) return;
-
-    try {
-      resumeInFlightRef.current = true;
-
-      const freshSession = await ensureFreshSession({ forceRefresh: true });
-      if (!freshSession?.user) return;
-
-      await loadAll(freshSession.user.id, {
-        silent: true,
-        keepCurrentRound: true
-      });
-
-      if (showToast) {
-        pushToast("App refreshed", "success");
-      }
-    } catch (_err) {
-      await forceToLogin("Session expired. Please sign in again.");
-    } finally {
-      resumeInFlightRef.current = false;
-    }
-  }
-
   async function loadNews() {
     try {
       setLoadingNews(true);
       setNewsError("");
 
-      const accessToken = await getAccessTokenOrThrow();
+      const freshSession = await ensureFreshSession({ forceRefresh: true });
+      if (!freshSession?.access_token) return;
 
-      const response = await fetchWithTimeout(
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/f1-news`,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`
+            Authorization: `Bearer ${freshSession.access_token}`
           },
-          body: JSON.stringify({})
-        },
-        15000
+          body: JSON.stringify({}),
+          signal: controller.signal
+        }
       );
+
+      clearTimeout(timeoutId);
 
       const data = await response.json().catch(() => ({}));
 
@@ -1655,19 +1574,20 @@ export default function App() {
       setLoadingChat(true);
       setChatError("");
 
-      const { data, error } = await withTimeout(
+      const result = await Promise.race([
         supabase
           .from("chat_messages")
           .select("id, user_id, message, created_at")
           .order("created_at", { ascending: true })
           .limit(100),
-        12000,
-        "Chat load timed out."
-      );
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Chat load timed out.")), 12000)
+        )
+      ]);
 
-      if (error) throw error;
+      if (result.error) throw result.error;
 
-      const enriched = (data || []).map((row) => ({
+      const enriched = (result.data || []).map((row) => ({
         ...row,
         display_name: profiles.find((p) => p.id === row.user_id)?.display_name || "Player"
       }));
@@ -1690,16 +1610,17 @@ export default function App() {
       const freshSession = await ensureFreshSession({ forceRefresh: true });
       if (!freshSession?.user) return;
 
-      const { error } = await withTimeout(
+      const result = await Promise.race([
         supabase.from("chat_messages").insert({
           user_id: freshSession.user.id,
           message
         }),
-        12000,
-        "Send message timed out."
-      );
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Send message timed out.")), 12000)
+        )
+      ]);
 
-      if (error) throw error;
+      if (result.error) throw result.error;
 
       setChatDraft("");
       pushToast("Message sent", "success");
@@ -1739,7 +1660,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    async function onVisibilityChange() {
+    function onVisibilityChange() {
       if (document.visibilityState === "hidden") {
         lastHiddenAtRef.current = Date.now();
         return;
@@ -1750,18 +1671,18 @@ export default function App() {
           ? Date.now() - lastHiddenAtRef.current
           : 0;
 
-        if (hiddenForMs > 15000) {
+        if (hiddenForMs > APP_RESUME_RELOAD_MS) {
           window.location.reload();
         }
       }
     }
 
-    async function onWindowFocus() {
+    function onWindowFocus() {
       const hiddenForMs = lastHiddenAtRef.current
         ? Date.now() - lastHiddenAtRef.current
         : 0;
 
-      if (hiddenForMs > 15000) {
+      if (hiddenForMs > APP_RESUME_RELOAD_MS) {
         window.location.reload();
       }
     }
@@ -1781,41 +1702,28 @@ export default function App() {
     if (activeTab === "news") {
       loadNews();
     }
+
     if (activeTab === "chat") {
       loadChat();
     }
   }, [activeTab, session?.user]);
 
   useEffect(() => {
-    if (!session?.user) return;
+    if (!session?.user || activeTab !== "chat") return;
 
-    let channel;
-
-    async function setupChatRealtime() {
-      try {
-        channel = supabase
-          .channel("chat-messages-live")
-          .on(
-            "postgres_changes",
-            { event: "*", schema: "public", table: "chat_messages" },
-            async () => {
-              await loadChat();
-            }
-          )
-          .subscribe();
-      } catch (_err) {
-        // ignore
-      }
-    }
-
-    if (activeTab === "chat") {
-      setupChatRealtime();
-    }
+    const channel = supabase
+      .channel("chat-messages-live")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "chat_messages" },
+        async () => {
+          await loadChat();
+        }
+      )
+      .subscribe();
 
     return () => {
-      if (channel) {
-        supabase.removeChannel(channel);
-      }
+      supabase.removeChannel(channel);
     };
   }, [activeTab, session?.user, profiles]);
 
@@ -1972,44 +1880,37 @@ export default function App() {
       if (resultType === "sprint") setSavingMySprint(true);
       if (resultType === "race") setSavingMyRace(true);
 
-      const accessToken = await getAccessTokenOrThrow();
+      const freshSession = await ensureFreshSession({ forceRefresh: true });
+      if (!freshSession?.user) return;
 
-      const response = await fetchWithTimeout(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/save-my-tip`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`
-          },
-          body: JSON.stringify({
-            round_id: activeRound.id,
-            result_type: resultType,
-            p1_driver_id: draft.p1_driver_id || null,
-            p2_driver_id: draft.p2_driver_id || null,
-            p3_driver_id: draft.p3_driver_id || null,
-            oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null
-          })
-        },
-        15000
-      );
+      const payload = {
+        round_id: activeRound.id,
+        user_id: freshSession.user.id,
+        result_type: resultType,
+        p1_driver_id: draft.p1_driver_id || null,
+        p2_driver_id: draft.p2_driver_id || null,
+        p3_driver_id: draft.p3_driver_id || null,
+        oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
+        updated_at: new Date().toISOString()
+      };
 
-      const data = await response.json().catch(() => ({}));
+      const result = await Promise.race([
+        supabase
+          .from("tips")
+          .upsert(payload, { onConflict: "round_id,user_id,result_type" }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Save tip timed out. Session may be stale. Tap Reload App.")), 15000)
+        )
+      ]);
 
-      if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || "Failed to save tip");
-      }
+      if (result.error) throw result.error;
 
       const successMessage = `${resultType === "sprint" ? "Sprint" : "Grand Prix"} tip saved`;
       setMsg(successMessage);
       pushToast(successMessage, "success");
-      await loadAll(session.user.id, { silent: true, keepCurrentRound: true });
+      await loadAll(freshSession.user.id, { silent: true, keepCurrentRound: true });
     } catch (err) {
-      const message =
-        err?.name === "AbortError"
-          ? "Save tip timed out. Session may be stale. Tap Reload App."
-          : err?.message || "Failed to save tip";
-
+      const message = err?.message || "Failed to save tip";
       setMsg(message);
       pushToast(message, "error");
     } finally {
@@ -2025,44 +1926,34 @@ export default function App() {
       if (resultType === "sprint") setSavingSprintResult(true);
       if (resultType === "race") setSavingRaceResult(true);
 
-      const accessToken = await getAccessTokenOrThrow();
+      const payload = {
+        round_id: activeRound.id,
+        result_type: resultType,
+        p1_driver_id: draft.p1_driver_id || null,
+        p2_driver_id: draft.p2_driver_id || null,
+        p3_driver_id: draft.p3_driver_id || null,
+        oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null,
+        source: "manual",
+        updated_at: new Date().toISOString()
+      };
 
-      const response = await fetchWithTimeout(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-save-result`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`
-          },
-          body: JSON.stringify({
-            round_id: activeRound.id,
-            result_type: resultType,
-            p1_driver_id: draft.p1_driver_id || null,
-            p2_driver_id: draft.p2_driver_id || null,
-            p3_driver_id: draft.p3_driver_id || null,
-            oscar_finish: draft.oscar_finish ? Number(draft.oscar_finish) : null
-          })
-        },
-        15000
-      );
+      const result = await Promise.race([
+        supabase
+          .from("results")
+          .upsert(payload, { onConflict: "round_id,result_type" }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Save result timed out. Tap Reload App.")), 15000)
+        )
+      ]);
 
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || "Failed to save result");
-      }
+      if (result.error) throw result.error;
 
       const successMessage = `${resultType === "sprint" ? "Sprint" : "Grand Prix"} result saved`;
       setMsg(successMessage);
       pushToast(successMessage, "success");
       await loadAll(session.user.id, { silent: true, keepCurrentRound: true });
     } catch (err) {
-      const message =
-        err?.name === "AbortError"
-          ? "Save result timed out. Session may be stale. Tap Reload App."
-          : err?.message || "Failed to save result";
-
+      const message = err?.message || "Failed to save result";
       setMsg(message);
       pushToast(message, "error");
     } finally {
@@ -2079,20 +1970,26 @@ export default function App() {
       setMsg("Syncing results...");
       pushToast("Syncing results...", "info");
 
-      const accessToken = await getAccessTokenOrThrow();
+      const freshSession = await ensureFreshSession({ forceRefresh: true });
+      if (!freshSession?.access_token) return;
 
-      const response = await fetchWithTimeout(
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+      const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sync-results`,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`
+            Authorization: `Bearer ${freshSession.access_token}`
           },
-          body: JSON.stringify({})
-        },
-        20000
+          body: JSON.stringify({}),
+          signal: controller.signal
+        }
       );
+
+      clearTimeout(timeoutId);
 
       const data = await response.json().catch(() => ({}));
 
@@ -2107,10 +2004,7 @@ export default function App() {
 
       setMsg(message);
       pushToast(message, "success");
-
-      if (session?.user?.id) {
-        await loadAll(session.user.id, { silent: true, keepCurrentRound: true });
-      }
+      await loadAll(session.user.id, { silent: true, keepCurrentRound: true });
     } catch (err) {
       const message = err?.message || "Sync failed";
       setMsg(message);
@@ -2122,13 +2016,14 @@ export default function App() {
 
   async function signOut() {
     try {
-      const signOutPromise = supabase.auth.signOut();
+      const result = await Promise.race([
+        supabase.auth.signOut(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Sign out timed out. Please tap Reload App.")), 10000)
+        )
+      ]);
 
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Sign out timed out. Please tap Reload App.")), 10000)
-      );
-
-      await Promise.race([signOutPromise, timeoutPromise]);
+      if (result?.error) throw result.error;
 
       setSession(null);
       setProfile(null);
