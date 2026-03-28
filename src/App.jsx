@@ -1537,7 +1537,7 @@ export default function App() {
       if (!freshSession?.access_token) return;
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
 
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/f1-news`,
@@ -1562,8 +1562,8 @@ export default function App() {
 
       setNewsItems(Array.isArray(data?.items) ? data.items : []);
     } catch (err) {
-      setNewsError(err?.message || "Could not load news.");
       setNewsItems([]);
+      setNewsError(err?.message || "Could not load news.");
     } finally {
       setLoadingNews(false);
     }
@@ -1581,7 +1581,7 @@ export default function App() {
           .order("created_at", { ascending: true })
           .limit(100),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Chat load timed out.")), 12000)
+          setTimeout(() => reject(new Error("Chat load timed out.")), 10000)
         )
       ]);
 
@@ -1594,8 +1594,8 @@ export default function App() {
 
       setChatMessages(enriched);
     } catch (err) {
-      setChatError(err?.message || "Chat is not set up yet.");
       setChatMessages([]);
+      setChatError(err?.message || "Chat is not set up yet.");
     } finally {
       setLoadingChat(false);
     }
@@ -1616,7 +1616,7 @@ export default function App() {
           message
         }),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Send message timed out.")), 12000)
+          setTimeout(() => reject(new Error("Send message timed out.")), 10000)
         )
       ]);
 
@@ -1899,7 +1899,7 @@ export default function App() {
           .from("tips")
           .upsert(payload, { onConflict: "round_id,user_id,result_type" }),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Save tip timed out. Session may be stale. Tap Reload App.")), 15000)
+          setTimeout(() => reject(new Error("Save tip timed out. Session may be stale. Tap Reload App.")), 12000)
         )
       ]);
 
@@ -1942,7 +1942,7 @@ export default function App() {
           .from("results")
           .upsert(payload, { onConflict: "round_id,result_type" }),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Save result timed out. Tap Reload App.")), 15000)
+          setTimeout(() => reject(new Error("Save result timed out. Tap Reload App.")), 12000)
         )
       ]);
 
@@ -1974,7 +1974,7 @@ export default function App() {
       if (!freshSession?.access_token) return;
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000);
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
 
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sync-results`,
