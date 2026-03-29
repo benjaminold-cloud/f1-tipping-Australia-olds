@@ -1,4 +1,4 @@
-// app refresh 
+// app refresh
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -15,7 +15,6 @@ const supabase = createClient(
 );
 
 const ROUND_STAY_VISIBLE_HOURS = 48;
-const APP_RESUME_RELOAD_MS = 15000;
 
 const TEAM_META = {
   McLaren: {
@@ -71,18 +70,6 @@ const TEAM_META = {
 function fmt(dateStr) {
   if (!dateStr) return "TBC";
   return new Date(dateStr).toLocaleString();
-}
-
-function fmtRelative(dateStr) {
-  if (!dateStr) return "";
-  const then = new Date(dateStr).getTime();
-  const now = Date.now();
-  const diffSec = Math.floor((now - then) / 1000);
-
-  if (diffSec < 60) return "just now";
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
-  return `${Math.floor(diffSec / 86400)}d ago`;
 }
 
 function countdownText(targetDate, now) {
@@ -635,110 +622,6 @@ function TipsCard({ title, tips, profilesById, driverMap, result, isSprint }) {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-function NewsPanel({ items, loading, error, onReload }) {
-  return (
-    <div style={styles.card}>
-      <div style={styles.cardHeaderRow}>
-        <h2 style={styles.sectionTitle}>Latest F1 News</h2>
-        <button style={styles.secondary} onClick={onReload} disabled={loading}>
-          {loading ? "Loading..." : "Reload News"}
-        </button>
-      </div>
-
-      {error ? <div style={styles.notice}>{error}</div> : null}
-
-      {!loading && !items.length ? (
-        <p style={styles.mutedText}>
-          No news yet. Add the `f1-news` edge function to power this tab.
-        </p>
-      ) : null}
-
-      <div style={styles.stack}>
-        {items.map((item, idx) => (
-          <a
-            key={`${item.link}-${idx}`}
-            href={item.link}
-            target="_blank"
-            rel="noreferrer"
-            style={styles.newsCard}
-          >
-            <div style={styles.newsSourceRow}>
-              <span style={styles.newsSource}>{item.source || "F1 News"}</span>
-              <span style={styles.newsTime}>{fmtRelative(item.published_at)}</span>
-            </div>
-            <div style={styles.newsTitle}>{item.title}</div>
-            {item.summary ? <div style={styles.newsSummary}>{item.summary}</div> : null}
-          </a>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ChatPanel({
-  session,
-  profile,
-  messages,
-  loading,
-  error,
-  sending,
-  draftMessage,
-  setDraftMessage,
-  onSend
-}) {
-  return (
-    <div style={styles.card}>
-      <div style={styles.cardHeaderRow}>
-        <h2 style={styles.sectionTitle}>Chat</h2>
-        <span style={styles.badgePending}>
-          {profile?.display_name || session?.user?.email || "Player"}
-        </span>
-      </div>
-
-      {error ? <div style={styles.notice}>{error}</div> : null}
-
-      <div style={styles.chatFeed}>
-        {loading ? <p style={styles.mutedText}>Loading chat…</p> : null}
-        {!loading && !messages.length ? (
-          <p style={styles.mutedText}>
-            No messages yet. Create the `chat_messages` table to power this tab.
-          </p>
-        ) : null}
-
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            style={{
-              ...styles.chatMessage,
-              ...(msg.user_id === session?.user?.id ? styles.chatMessageMine : styles.chatMessageOther)
-            }}
-          >
-            <div style={styles.chatMeta}>
-              <strong>{msg.display_name || "Player"}</strong>
-              <span>{fmtRelative(msg.created_at)}</span>
-            </div>
-            <div style={styles.chatText}>{msg.message}</div>
-          </div>
-        ))}
-      </div>
-
-      <div style={styles.chatComposer}>
-        <textarea
-          style={styles.chatInput}
-          value={draftMessage}
-          onChange={(e) => setDraftMessage(e.target.value)}
-          placeholder="Write a message…"
-          rows={3}
-          disabled={sending}
-        />
-        <button style={styles.primary} onClick={onSend} disabled={sending || !draftMessage.trim()}>
-          {sending ? "Sending..." : "Send"}
-        </button>
-      </div>
     </div>
   );
 }
@@ -1369,26 +1252,14 @@ export default function App() {
   const [msg, setMsg] = useState("");
   const [now, setNow] = useState(new Date());
   const [activeTab, setActiveTab] = useState("tips");
-  const [syncing, setSyncing] = useState(false);
-  const [recoveringSession, setRecoveringSession] = useState(false);
   const [savingMySprint, setSavingMySprint] = useState(false);
   const [savingMyRace, setSavingMyRace] = useState(false);
   const [savingSprintResult, setSavingSprintResult] = useState(false);
   const [savingRaceResult, setSavingRaceResult] = useState(false);
   const [toast, setToast] = useState(null);
-
-  const [newsItems, setNewsItems] = useState([]);
-  const [loadingNews, setLoadingNews] = useState(false);
-  const [newsError, setNewsError] = useState("");
-
-  const [chatMessages, setChatMessages] = useState([]);
-  const [loadingChat, setLoadingChat] = useState(false);
-  const [chatError, setChatError] = useState("");
-  const [chatDraft, setChatDraft] = useState("");
-  const [sendingChat, setSendingChat] = useState(false);
+  const [loadingApp, setLoadingApp] = useState(false);
 
   const toastTimerRef = useRef(null);
-  const lastHiddenAtRef = useRef(null);
 
   function pushToast(message, type = "info") {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -1409,27 +1280,38 @@ export default function App() {
     setToast(null);
   }
 
-  async function forceToLogin(message = "Session expired. Please sign in again.") {
-    try {
-      await supabase.auth.signOut({ scope: "local" });
-    } catch (_err) {
-      // ignore
+  async function ensureFreshSession() {
+    const {
+      data: { session: currentSession }
+    } = await supabase.auth.getSession();
+
+    if (!currentSession) {
+      setSession(null);
+      throw new Error("Session expired. Please sign in again.");
     }
 
-    setSession(null);
-    setProfile(null);
-    setProfiles([]);
-    setDrivers([]);
-    setRounds([]);
-    setTips([]);
-    setResults([]);
-    setActiveRoundId(null);
-    setMsg(message);
-    pushToast(message, "error");
+    const expiresAtMs = currentSession.expires_at
+      ? currentSession.expires_at * 1000
+      : 0;
+
+    if (expiresAtMs && expiresAtMs - Date.now() < 5 * 60 * 1000) {
+      const { data, error } = await supabase.auth.refreshSession();
+      if (error || !data?.session) {
+        setSession(null);
+        throw new Error("Session expired. Please sign in again.");
+      }
+      setSession(data.session);
+      return data.session;
+    }
+
+    setSession(currentSession);
+    return currentSession;
   }
 
   async function loadAll(userIdOverride, { silent = false, keepCurrentRound = true } = {}) {
     try {
+      setLoadingApp(true);
+
       const [profilesRes, driversRes, roundsRes, tipsRes, resultsRes] = await Promise.race([
         Promise.all([
           supabase.from("profiles").select("id, display_name, is_admin").order("display_name"),
@@ -1483,153 +1365,8 @@ export default function App() {
         setMsg(message);
         pushToast(message, "error");
       }
-    }
-  }
-
-  async function ensureFreshSession({ forceRefresh = false } = {}) {
-    setRecoveringSession(true);
-
-    try {
-      let {
-        data: { session: currentSession }
-      } = await supabase.auth.getSession();
-
-      if (!currentSession) {
-        await forceToLogin("Session expired. Please sign in again.");
-        return null;
-      }
-
-      const expiresAtMs = currentSession.expires_at
-        ? currentSession.expires_at * 1000
-        : 0;
-
-      const msLeft = expiresAtMs - Date.now();
-      const shouldRefresh = forceRefresh || msLeft < 5 * 60 * 1000;
-
-      if (shouldRefresh) {
-        const { data, error } = await supabase.auth.refreshSession();
-
-        if (error || !data?.session) {
-          await forceToLogin("Session expired. Please sign in again.");
-          return null;
-        }
-
-        currentSession = data.session;
-        setSession(currentSession);
-      } else {
-        setSession(currentSession);
-      }
-
-      return currentSession;
-    } catch (_err) {
-      await forceToLogin("Session expired. Please sign in again.");
-      return null;
     } finally {
-      setRecoveringSession(false);
-    }
-  }
-
-  async function loadNews() {
-    try {
-      setLoadingNews(true);
-      setNewsError("");
-
-      const freshSession = await ensureFreshSession({ forceRefresh: true });
-      if (!freshSession?.access_token) return;
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/f1-news`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${freshSession.access_token}`
-          },
-          body: JSON.stringify({}),
-          signal: controller.signal
-        }
-      );
-
-      clearTimeout(timeoutId);
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(data?.error || "News feed is not set up yet.");
-      }
-
-      setNewsItems(Array.isArray(data?.items) ? data.items : []);
-    } catch (err) {
-      setNewsItems([]);
-      setNewsError(err?.message || "Could not load news.");
-    } finally {
-      setLoadingNews(false);
-    }
-  }
-
-  async function loadChat() {
-    try {
-      setLoadingChat(true);
-      setChatError("");
-
-      const result = await Promise.race([
-        supabase
-          .from("chat_messages")
-          .select("id, user_id, message, created_at")
-          .order("created_at", { ascending: true })
-          .limit(100),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Chat load timed out.")), 10000)
-        )
-      ]);
-
-      if (result.error) throw result.error;
-
-      const enriched = (result.data || []).map((row) => ({
-        ...row,
-        display_name: profiles.find((p) => p.id === row.user_id)?.display_name || "Player"
-      }));
-
-      setChatMessages(enriched);
-    } catch (err) {
-      setChatMessages([]);
-      setChatError(err?.message || "Chat is not set up yet.");
-    } finally {
-      setLoadingChat(false);
-    }
-  }
-
-  async function sendChatMessage() {
-    try {
-      const message = chatDraft.trim();
-      if (!message) return;
-
-      setSendingChat(true);
-      const freshSession = await ensureFreshSession({ forceRefresh: true });
-      if (!freshSession?.user) return;
-
-      const result = await Promise.race([
-        supabase.from("chat_messages").insert({
-          user_id: freshSession.user.id,
-          message
-        }),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Send message timed out.")), 10000)
-        )
-      ]);
-
-      if (result.error) throw result.error;
-
-      setChatDraft("");
-      pushToast("Message sent", "success");
-      await loadChat();
-    } catch (err) {
-      pushToast(err?.message || "Could not send message", "error");
-    } finally {
-      setSendingChat(false);
+      setLoadingApp(false);
     }
   }
 
@@ -1659,74 +1396,6 @@ export default function App() {
 
     return () => subscription.unsubscribe();
   }, []);
-
-  useEffect(() => {
-    function onVisibilityChange() {
-      if (document.visibilityState === "hidden") {
-        lastHiddenAtRef.current = Date.now();
-        return;
-      }
-
-      if (document.visibilityState === "visible") {
-        const hiddenForMs = lastHiddenAtRef.current
-          ? Date.now() - lastHiddenAtRef.current
-          : 0;
-
-        if (hiddenForMs > APP_RESUME_RELOAD_MS) {
-          window.location.reload();
-        }
-      }
-    }
-
-    function onWindowFocus() {
-      const hiddenForMs = lastHiddenAtRef.current
-        ? Date.now() - lastHiddenAtRef.current
-        : 0;
-
-      if (hiddenForMs > APP_RESUME_RELOAD_MS) {
-        window.location.reload();
-      }
-    }
-
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("focus", onWindowFocus);
-
-    return () => {
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("focus", onWindowFocus);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!session?.user) return;
-
-    if (activeTab === "news") {
-      loadNews();
-    }
-
-    if (activeTab === "chat") {
-      loadChat();
-    }
-  }, [activeTab, session?.user]);
-
-  useEffect(() => {
-    if (!session?.user || activeTab !== "chat") return;
-
-    const channel = supabase
-      .channel("chat-messages-live")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "chat_messages" },
-        async () => {
-          await loadChat();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [activeTab, session?.user, profiles]);
 
   const activeRound = useMemo(
     () => rounds.find((r) => r.id === activeRoundId) || null,
@@ -1805,7 +1474,6 @@ export default function App() {
 
   const leaderboard = useMemo(() => {
     const byUser = new Map();
-
     const getTeamFromDriverId = (driverId) => driverMap.get(driverId)?.team || null;
 
     tips.forEach((tip) => {
@@ -1881,8 +1549,7 @@ export default function App() {
       if (resultType === "sprint") setSavingMySprint(true);
       if (resultType === "race") setSavingMyRace(true);
 
-      const freshSession = await ensureFreshSession({ forceRefresh: true });
-      if (!freshSession?.user) return;
+      const freshSession = await ensureFreshSession();
 
       const payload = {
         round_id: activeRound.id,
@@ -1900,7 +1567,7 @@ export default function App() {
           .from("tips")
           .upsert(payload, { onConflict: "round_id,user_id,result_type" }),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Save tip timed out. Session may be stale. Tap Reload App.")), 12000)
+          setTimeout(() => reject(new Error("Save tip timed out. Tap Reload App.")), 12000)
         )
       ]);
 
@@ -1926,6 +1593,8 @@ export default function App() {
     try {
       if (resultType === "sprint") setSavingSprintResult(true);
       if (resultType === "race") setSavingRaceResult(true);
+
+      await ensureFreshSession();
 
       const payload = {
         round_id: activeRound.id,
@@ -1963,64 +1632,12 @@ export default function App() {
     }
   }
 
-  async function syncResultsNow() {
-    if (!profile?.is_admin) return;
-
-    try {
-      setSyncing(true);
-      setMsg("Syncing results...");
-      pushToast("Syncing results...", "info");
-
-      const freshSession = await ensureFreshSession({ forceRefresh: true });
-      if (!freshSession?.access_token) return;
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sync-results`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${freshSession.access_token}`
-          },
-          body: JSON.stringify({}),
-          signal: controller.signal
-        }
-      );
-
-      clearTimeout(timeoutId);
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(data?.error || "Sync failed");
-      }
-
-      const message =
-        data?.actions?.length
-          ? `Sync complete: ${data.actions.join(", ")}`
-          : "Sync complete";
-
-      setMsg(message);
-      pushToast(message, "success");
-      await loadAll(session.user.id, { silent: true, keepCurrentRound: true });
-    } catch (err) {
-      const message = err?.message || "Sync failed";
-      setMsg(message);
-      pushToast(message, "error");
-    } finally {
-      setSyncing(false);
-    }
-  }
-
   async function signOut() {
     try {
       const result = await Promise.race([
         supabase.auth.signOut(),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Sign out timed out. Please tap Reload App.")), 10000)
+          setTimeout(() => reject(new Error("Sign out timed out. Tap Reload App.")), 10000)
         )
       ]);
 
@@ -2060,23 +1677,14 @@ export default function App() {
               Reload App
             </button>
 
-            {profile?.is_admin ? (
-              <button
-                onClick={syncResultsNow}
-                style={styles.secondary}
-                disabled={syncing || recoveringSession}
-              >
-                {syncing ? "Syncing..." : "Sync Results"}
-              </button>
-            ) : null}
-
-            <button onClick={signOut} style={styles.primary} disabled={recoveringSession}>
-              {recoveringSession ? "Please wait..." : "Sign out"}
+            <button onClick={signOut} style={styles.primary}>
+              Sign out
             </button>
           </div>
         </div>
 
         {msg ? <div style={styles.notice}>{msg}</div> : null}
+        {loadingApp ? <div style={styles.notice}>Loading…</div> : null}
 
         <div style={styles.card}>
           <h2 style={styles.sectionTitle}>Round</h2>
@@ -2166,20 +1774,6 @@ export default function App() {
           </button>
           <button
             type="button"
-            style={activeTab === "news" ? styles.activeTabButton : styles.tabButton}
-            onClick={() => setActiveTab("news")}
-          >
-            News
-          </button>
-          <button
-            type="button"
-            style={activeTab === "chat" ? styles.activeTabButton : styles.tabButton}
-            onClick={() => setActiveTab("chat")}
-          >
-            Chat
-          </button>
-          <button
-            type="button"
             style={activeTab === "profile" ? styles.activeTabButton : styles.tabButton}
             onClick={() => setActiveTab("profile")}
           >
@@ -2204,7 +1798,7 @@ export default function App() {
                 draft={sprintDraft}
                 setDraft={setSprintDraft}
                 drivers={drivers}
-                disabled={!roundStatus.sprintOpen || recoveringSession}
+                disabled={!roundStatus.sprintOpen}
                 onSave={() => saveTip("sprint", sprintDraft)}
                 saveLabel="Save sprint tip"
                 saving={savingMySprint}
@@ -2216,7 +1810,7 @@ export default function App() {
               draft={raceDraft}
               setDraft={setRaceDraft}
               drivers={drivers}
-              disabled={!roundStatus.raceOpen || recoveringSession}
+              disabled={!roundStatus.raceOpen}
               onSave={() => saveTip("race", raceDraft)}
               saveLabel="Save Grand Prix tip"
               saving={savingMyRace}
@@ -2295,29 +1889,6 @@ export default function App() {
           </div>
         ) : null}
 
-        {activeTab === "news" ? (
-          <NewsPanel
-            items={newsItems}
-            loading={loadingNews}
-            error={newsError}
-            onReload={loadNews}
-          />
-        ) : null}
-
-        {activeTab === "chat" ? (
-          <ChatPanel
-            session={session}
-            profile={profile}
-            messages={chatMessages}
-            loading={loadingChat}
-            error={chatError}
-            sending={sendingChat}
-            draftMessage={chatDraft}
-            setDraftMessage={setChatDraft}
-            onSend={sendChatMessage}
-          />
-        ) : null}
-
         {activeTab === "profile" ? (
           <ProfilePanel
             session={session}
@@ -2332,7 +1903,7 @@ export default function App() {
             <div style={styles.adminBanner}>
               <div style={styles.adminBadge}>Admin Mode</div>
               <div style={styles.adminBannerText}>
-                Admin tools are visible only to admins. Regular users won’t see this section.
+                Stable mode enabled. Manual result entry only.
               </div>
             </div>
 
@@ -2786,80 +2357,5 @@ const styles = {
     cursor: "pointer",
     padding: 0,
     marginTop: -2
-  },
-  newsCard: {
-    display: "block",
-    textDecoration: "none",
-    background: "#11151c",
-    border: "1px solid #2a2f3a",
-    borderRadius: 14,
-    padding: 14,
-    color: "white"
-  },
-  newsSourceRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 10,
-    marginBottom: 8,
-    color: "#9ca3af",
-    fontSize: 12
-  },
-  newsSource: {
-    fontWeight: 700
-  },
-  newsTime: {},
-  newsTitle: {
-    fontWeight: 700,
-    marginBottom: 8,
-    lineHeight: 1.4
-  },
-  newsSummary: {
-    color: "#d1d5db",
-    fontSize: 14,
-    lineHeight: 1.5
-  },
-  chatFeed: {
-    display: "grid",
-    gap: 10,
-    maxHeight: 420,
-    overflowY: "auto",
-    marginBottom: 16
-  },
-  chatMessage: {
-    borderRadius: 14,
-    padding: 12,
-    border: "1px solid #2a2f3a"
-  },
-  chatMessageMine: {
-    background: "#182332"
-  },
-  chatMessageOther: {
-    background: "#11151c"
-  },
-  chatMeta: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 8,
-    marginBottom: 6,
-    fontSize: 12,
-    color: "#9ca3af"
-  },
-  chatText: {
-    lineHeight: 1.5,
-    whiteSpace: "pre-wrap"
-  },
-  chatComposer: {
-    display: "grid",
-    gap: 10
-  },
-  chatInput: {
-    width: "100%",
-    padding: 12,
-    borderRadius: 10,
-    border: "1px solid #333",
-    background: "#0f1115",
-    color: "white",
-    boxSizing: "border-box",
-    resize: "vertical"
   }
 };
